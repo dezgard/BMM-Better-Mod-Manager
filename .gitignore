@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+
+# Local BMM runtime data
+Mod_index/
+
+# Build output
+build/
+dist/
+*.spec
+*.exe
+*.rar
+*.zip
+
+# Test/generated folders
+.test-*/
+release-backups/
+
+# Local backups
+*.bak-*

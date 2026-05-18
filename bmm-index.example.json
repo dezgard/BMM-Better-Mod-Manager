@@ -1,0 +1,139 @@
+{
+  "schema": "bmm-index-v1",
+  "game": {
+    "id": "ostranauts",
+    "name": "Ostranauts"
+  },
+  "updated_utc": "2026-05-17T00:00:00Z",
+  "mods": [
+    {
+      "id": "dez.big",
+      "name": "BIG / Better Inventory Game",
+      "summary": "Improves Ostranauts hauling with BIG-owned selection, markers, planning, and drop-off control.",
+      "authors": [
+        "Dezgard"
+      ],
+      "categories": [
+        "quality-of-life",
+        "hauling"
+      ],
+      "website": "https://github.com/dezgard/BIG-Better-Inventory-Game-",
+      "notes": [
+        "Current local 0.9.11 zip contains the DLL, README, and changelog only. BIG icon assets are expected in BepInEx/plugins/BIGAssets when icon UI is used."
+      ],
+      "plugin": {
+        "guid": "com.dezgard.ostranauts.haulingv2",
+        "name": "BIG Better Inventory Game",
+        "dll": "OstranautsHaulingV2.dll"
+      },
+      "relationships": {
+        "depends": [],
+        "recommends": [],
+        "suggests": [],
+        "conflicts": [],
+        "provides": [
+          "com.dezgard.ostranauts.haulingv2"
+        ]
+      },
+      "release": {
+        "provider": "github",
+        "repo": "dezgard/BIG-Better-Inventory-Game-",
+        "asset_pattern": "OstranautsHaulingV2-*.zip",
+        "include_prereleases": false
+      },
+      "versions": [
+        {
+          "version": "0.9.11",
+          "game_versions": [
+            "0.14.x"
+          ],
+          "bepinex": "5.x x64",
+          "download": {
+            "type": "local",
+            "path": "G:/AIWORK/OstranautsSmartHaulingFresh/release/OstranautsHaulingV2-0.9.11.zip"
+          },
+          "install": {
+            "root": "bepinex_plugins",
+            "entries": [
+              {
+                "source": "OstranautsHaulingV2.dll",
+                "target": "OstranautsHaulingV2.dll"
+              }
+            ]
+          },
+          "relationships": {
+            "depends": [],
+            "recommends": [],
+            "suggests": [],
+            "conflicts": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "dez.bbg",
+      "name": "BBG / Better Battery Game",
+      "summary": "Automatically swaps low held-tool batteries and can use compatible ship charger batteries.",
+      "authors": [
+        "Dezgard"
+      ],
+      "categories": [
+        "quality-of-life",
+        "tools",
+        "power"
+      ],
+      "website": "https://github.com/dezgard/BBG-Better-Battery-Game-",
+      "notes": [
+        "DLL-only BepInEx plugin."
+      ],
+      "plugin": {
+        "guid": "com.dezgard.ostranauts.batteryswap",
+        "name": "Ostranauts Battery Swap",
+        "dll": "OstranautsBatterySwap.dll"
+      },
+      "relationships": {
+        "depends": [],
+        "recommends": [],
+        "suggests": [],
+        "conflicts": [],
+        "provides": [
+          "com.dezgard.ostranauts.batteryswap"
+        ]
+      },
+      "release": {
+        "provider": "github",
+        "repo": "dezgard/BBG-Better-Battery-Game-",
+        "asset_pattern": "OstranautsBatterySwap-*.zip",
+        "include_prereleases": false
+      },
+      "versions": [
+        {
+          "version": "0.2.2",
+          "game_versions": [
+            "0.14.x"
+          ],
+          "bepinex": "5.x x64",
+          "download": {
+            "type": "local",
+            "path": "G:/AIWORK/OstranautsBatterySwap/release/OstranautsBatterySwap-0.2.2.zip"
+          },
+          "install": {
+            "root": "bepinex_plugins",
+            "entries": [
+              {
+                "source": "OstranautsBatterySwap.dll",
+                "target": "OstranautsBatterySwap.dll"
+              }
+            ]
+          },
+          "relationships": {
+            "depends": [],
+            "recommends": [],
+            "suggests": [],
+            "conflicts": []
+          }
+        }
+      ]
+    }
+  ]
+}
