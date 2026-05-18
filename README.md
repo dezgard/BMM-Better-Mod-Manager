@@ -2,7 +2,7 @@
 
 BMM is a lightweight mod manager for Ostranauts. It is built around a simple desktop GUI and a small JSON metadata format so BepInEx plugins and Ostranauts data mods can be installed, enabled, disabled, updated, and removed without editing the game folder by hand.
 
-The current build is intentionally focused on GitHub-hosted mods and local data mod ZIPs.
+The current build is intentionally focused on GitHub-hosted mods and local data mod ZIPs
 
 ## Features
 
