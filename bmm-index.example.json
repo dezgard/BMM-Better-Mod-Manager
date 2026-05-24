@@ -4,27 +4,25 @@
     "id": "ostranauts",
     "name": "Ostranauts"
   },
-  "updated_utc": "2026-05-17T00:00:00Z",
+  "updated_utc": "2026-05-24T00:00:00Z",
   "mods": [
     {
-      "id": "dez.big",
-      "name": "BIG / Better Inventory Game",
-      "summary": "Improves Ostranauts hauling with BIG-owned selection, markers, planning, and drop-off control.",
+      "id": "author.exampleplugin",
+      "type": "bepinex",
+      "name": "Example BepInEx Plugin",
+      "summary": "Example DLL-only BepInEx plugin entry.",
       "authors": [
-        "Dezgard"
+        "AuthorName"
       ],
       "categories": [
-        "quality-of-life",
-        "hauling"
+        "example",
+        "bepinex"
       ],
-      "website": "https://github.com/dezgard/BIG-Better-Inventory-Game-",
-      "notes": [
-        "Current local 0.9.11 zip contains the DLL, README, and changelog only. BIG icon assets are expected in BepInEx/plugins/BIGAssets when icon UI is used."
-      ],
+      "website": "https://github.com/AuthorName/ExamplePlugin",
       "plugin": {
-        "guid": "com.dezgard.ostranauts.haulingv2",
-        "name": "BIG Better Inventory Game",
-        "dll": "OstranautsHaulingV2.dll"
+        "guid": "com.author.ostranauts.exampleplugin",
+        "name": "Example BepInEx Plugin",
+        "dll": "ExamplePlugin.dll"
       },
       "relationships": {
         "depends": [],
@@ -32,108 +30,112 @@
         "suggests": [],
         "conflicts": [],
         "provides": [
-          "com.dezgard.ostranauts.haulingv2"
+          "com.author.ostranauts.exampleplugin"
         ]
       },
       "release": {
         "provider": "github",
-        "repo": "dezgard/BIG-Better-Inventory-Game-",
-        "asset_pattern": "OstranautsHaulingV2-*.zip",
+        "repo": "AuthorName/ExamplePlugin",
+        "asset_pattern": "ExamplePlugin-*.zip",
         "include_prereleases": false
       },
-      "versions": [
-        {
-          "version": "0.9.11",
-          "game_versions": [
-            "0.14.x"
-          ],
-          "bepinex": "5.x x64",
-          "download": {
-            "type": "local",
-            "path": "G:/AIWORK/OstranautsSmartHaulingFresh/release/OstranautsHaulingV2-0.9.11.zip"
-          },
-          "install": {
-            "root": "bepinex_plugins",
-            "entries": [
-              {
-                "source": "OstranautsHaulingV2.dll",
-                "target": "OstranautsHaulingV2.dll"
-              }
-            ]
-          },
-          "relationships": {
-            "depends": [],
-            "recommends": [],
-            "suggests": [],
-            "conflicts": []
+      "install": {
+        "entries": [
+          {
+            "source": "ExamplePlugin.dll",
+            "target": "ExamplePlugin.dll",
+            "root": "bepinex_plugins"
           }
-        }
-      ]
+        ]
+      }
     },
     {
-      "id": "dez.bbg",
-      "name": "BBG / Better Battery Game",
-      "summary": "Automatically swaps low held-tool batteries and can use compatible ship charger batteries.",
+      "id": "author.exampledata",
+      "type": "data",
+      "name": "Example Data Mod",
+      "summary": "Example Ostranauts data mod entry.",
       "authors": [
-        "Dezgard"
+        "AuthorName"
       ],
       "categories": [
-        "quality-of-life",
-        "tools",
-        "power"
+        "example",
+        "data"
       ],
-      "website": "https://github.com/dezgard/BBG-Better-Battery-Game-",
-      "notes": [
-        "DLL-only BepInEx plugin."
-      ],
-      "plugin": {
-        "guid": "com.dezgard.ostranauts.batteryswap",
-        "name": "Ostranauts Battery Swap",
-        "dll": "OstranautsBatterySwap.dll"
-      },
+      "website": "https://github.com/AuthorName/ExampleData",
+      "data_mod_folder": "Example Data Mod",
       "relationships": {
         "depends": [],
         "recommends": [],
         "suggests": [],
         "conflicts": [],
         "provides": [
-          "com.dezgard.ostranauts.batteryswap"
+          "author.exampledata"
         ]
       },
       "release": {
         "provider": "github",
-        "repo": "dezgard/BBG-Better-Battery-Game-",
-        "asset_pattern": "OstranautsBatterySwap-*.zip",
+        "repo": "AuthorName/ExampleData",
+        "asset_pattern": "ExampleData-*.zip",
         "include_prereleases": false
       },
-      "versions": [
-        {
-          "version": "0.2.2",
-          "game_versions": [
-            "0.14.x"
-          ],
-          "bepinex": "5.x x64",
-          "download": {
-            "type": "local",
-            "path": "G:/AIWORK/OstranautsBatterySwap/release/OstranautsBatterySwap-0.2.2.zip"
-          },
-          "install": {
-            "root": "bepinex_plugins",
-            "entries": [
-              {
-                "source": "OstranautsBatterySwap.dll",
-                "target": "OstranautsBatterySwap.dll"
-              }
-            ]
-          },
-          "relationships": {
-            "depends": [],
-            "recommends": [],
-            "suggests": [],
-            "conflicts": []
+      "install": {
+        "entries": [
+          {
+            "source": "Example Data Mod/",
+            "target": "Example Data Mod/",
+            "root": "data_mods"
           }
-        }
-      ]
+        ]
+      }
+    },
+    {
+      "id": "author.examplehybrid",
+      "type": "hybrid",
+      "name": "Example Hybrid Mod",
+      "summary": "Example BepInEx plugin plus Ostranauts data folder entry.",
+      "authors": [
+        "AuthorName"
+      ],
+      "categories": [
+        "example",
+        "hybrid"
+      ],
+      "website": "https://github.com/AuthorName/ExampleHybrid",
+      "plugin": {
+        "guid": "com.author.ostranauts.examplehybrid",
+        "name": "Example Hybrid Mod",
+        "dll": "ExampleHybrid.dll"
+      },
+      "data_mod_folder": "Example Hybrid Data",
+      "relationships": {
+        "depends": [],
+        "recommends": [],
+        "suggests": [],
+        "conflicts": [],
+        "provides": [
+          "com.author.ostranauts.examplehybrid"
+        ]
+      },
+      "release": {
+        "provider": "github",
+        "repo": "AuthorName/ExampleHybrid",
+        "asset_pattern": "ExampleHybrid-*.zip",
+        "include_prereleases": false
+      },
+      "install": {
+        "entries": [
+          {
+            "source": "ExampleHybrid.dll",
+            "target": "ExampleHybrid.dll",
+            "root": "bepinex_plugins"
+          },
+          {
+            "source": "Example Hybrid Data/",
+            "target": "Example Hybrid Data/",
+            "root": "data_mods"
+          }
+        ]
+      }
     }
   ]
 }

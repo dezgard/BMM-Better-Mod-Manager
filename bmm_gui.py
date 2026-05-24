@@ -705,14 +705,19 @@ class BmmGui:
         merged_mods = []
         seen_ids: set[str] = set()
         for repo in self.load_tracked_repos():
-            mod = github_mods.get(repo) if isinstance(github_mods, dict) else None
-            if not isinstance(mod, dict):
-                continue
-            mod_id = str(mod.get("id", ""))
-            if not mod_id or mod_id in seen_ids:
-                continue
-            merged_mods.append(mod)
-            seen_ids.add(mod_id)
+            stored = github_mods.get(repo) if isinstance(github_mods, dict) else None
+            if isinstance(stored, dict):
+                repo_mods = [stored]
+            elif isinstance(stored, list):
+                repo_mods = [item for item in stored if isinstance(item, dict)]
+            else:
+                repo_mods = []
+            for mod in repo_mods:
+                mod_id = str(mod.get("id", ""))
+                if not mod_id or mod_id in seen_ids:
+                    continue
+                merged_mods.append(mod)
+                seen_ids.add(mod_id)
         for path_value in self.load_tracked_data_zips():
             mod = self.data_zip_mod_entry(path_value)
             if not isinstance(mod, dict):
@@ -1082,6 +1087,10 @@ class BmmGui:
             for repo, cached in cached_mods.items():
                 if isinstance(repo, str) and isinstance(cached, dict) and str(cached.get("id", "")) == mod_id:
                     return repo
+                if isinstance(repo, str) and isinstance(cached, list):
+                    for cached_mod in cached:
+                        if isinstance(cached_mod, dict) and str(cached_mod.get("id", "")) == mod_id:
+                            return repo
 
         for repo in self.load_tracked_repos():
             if self.github_mod_id(repo) == mod_id:
@@ -1228,9 +1237,11 @@ class BmmGui:
         row = self.add_detail_row(row, "Latest", declared.get("version") if declared else "GitHub latest")
         row = self.add_detail_row(row, "Installed", record.get("version", "?") if isinstance(record, dict) else "no")
         row = self.add_detail_row(row, "Enabled", record.get("enabled", True) if isinstance(record, dict) else "n/a")
-        is_data_mod = str(mod.get("type") or "").lower() == "data" or (isinstance(record, dict) and str(record.get("type") or "") == "data")
+        type_value = str((record or {}).get("type") if isinstance(record, dict) else mod.get("type") or "").lower()
+        is_data_mod = type_value in ("data", "data_mod", "hybrid")
         if is_data_mod:
-            row = self.add_detail_row(row, "Type", "Ostranauts data mod")
+            type_label = "Hybrid BepInEx + data mod" if type_value == "hybrid" else "Ostranauts data mod"
+            row = self.add_detail_row(row, "Type", type_label)
             row = self.add_detail_row(row, "Data Folder", (record or {}).get("data_mod_folder") if isinstance(record, dict) else mod.get("data_mod_folder", ""))
         plugin_guid = str(plugin.get("guid", "")).strip()
         plugin_dll = str(plugin.get("dll", "")).strip()
@@ -1366,19 +1377,14 @@ class BmmGui:
             return None
         return sorted(zip_assets, key=lambda asset: str(asset.get("name", "")).lower())[0]
 
-    def fetch_github_mod_entry(self, repo: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    def fetch_github_fallback_mod_entry(
+        self,
+        repo: str,
+        repo_data: dict[str, Any],
+        release: dict[str, Any] | None,
+        release_error: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         owner, repo_name = repo.split("/", 1)
-        repo_data = bmm.http_get_json(f"{bmm.GITHUB_API_ROOT}/repos/{repo}")
-        if not isinstance(repo_data, dict):
-            raise bmm.BmmError(f"Unexpected GitHub repo response for {repo}")
-
-        release = None
-        release_error = ""
-        try:
-            release = bmm.github_latest_release(repo)
-        except bmm.BmmError as exc:
-            release_error = str(exc)
-
         asset = self.choose_release_asset(release)
         mod_id = self.github_mod_id(repo)
         name = str(repo_data.get("name") or repo_name)
@@ -1461,6 +1467,46 @@ class BmmGui:
         }
         return entry, status
 
+    def fetch_github_mod_entries(self, repo: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        repo_data = bmm.http_get_json(f"{bmm.GITHUB_API_ROOT}/repos/{repo}")
+        if not isinstance(repo_data, dict):
+            raise bmm.BmmError(f"Unexpected GitHub repo response for {repo}")
+
+        release = None
+        release_error = ""
+        try:
+            release = bmm.github_latest_release(repo)
+        except bmm.BmmError as exc:
+            release_error = str(exc)
+
+        default_branch = str(repo_data.get("default_branch") or "")
+        nest = bmm.github_fetch_nest(repo, default_branch or None)
+        if nest:
+            entries = bmm.nest_to_index_mods(nest, repo=repo, repo_data=repo_data, release=release)
+            asset_names = []
+            for entry in entries:
+                release_spec = entry.get("release") if isinstance(entry.get("release"), dict) else {}
+                pattern = str(release_spec.get("asset_pattern") or "").strip()
+                if release and pattern:
+                    try:
+                        asset_names.append(str(bmm.find_release_asset(release, pattern).get("name") or pattern))
+                    except bmm.BmmError:
+                        asset_names.append(pattern)
+            status = {
+                "repo": repo,
+                "ok": not release_error,
+                "updated_at": bmm.stamp(),
+                "release": str((release or {}).get("tag_name") or ""),
+                "asset": ", ".join(asset_names),
+                "message": release_error or f"OK: {bmm.NEST_FILE_NAME} found with {len(entries)} mod(s)",
+                "nest": bmm.NEST_FILE_NAME,
+                "mods": [str(entry.get("id") or "") for entry in entries],
+            }
+            return entries, status
+
+        entry, status = self.fetch_github_fallback_mod_entry(repo, repo_data, release, release_error)
+        return [entry], status
+
     def add_github_repo(self) -> None:
         try:
             repo = self.normalize_github_repo(self.github_repo_var.get())
@@ -1524,7 +1570,8 @@ class BmmGui:
         root_name = str(external.get("root") or "bepinex_plugins")
 
         def task() -> int:
-            entry, status = self.fetch_github_mod_entry(repo)
+            entries, status = self.fetch_github_mod_entries(repo)
+            entry = entries[0] if entries else {}
             state = bmm.load_state(self.rt)
             links = state.setdefault(EXTERNAL_LINKS_KEY, {})
             if not isinstance(links, dict):
@@ -1590,10 +1637,15 @@ class BmmGui:
             for repo in selected_repos:
                 print(f"Updating GitHub repo: {repo}")
                 try:
-                    entry, status = self.fetch_github_mod_entry(str(repo))
-                    cached_mods[str(repo)] = entry
+                    entries, status = self.fetch_github_mod_entries(str(repo))
+                    cached_mods[str(repo)] = entries
                     statuses[str(repo)] = status
-                    print(f"  {entry['name']} {status.get('release') or 'no release'} {status.get('asset') or 'no zip asset'}")
+                    print(
+                        f"  {len(entries)} mod(s) {status.get('release') or 'no release'} "
+                        f"{status.get('asset') or 'no zip asset'}"
+                    )
+                    for entry in entries:
+                        print(f"    {entry.get('id')}: {entry.get('name')}")
                 except bmm.BmmError as exc:
                     had_error = True
                     statuses[str(repo)] = {
@@ -1803,6 +1855,8 @@ class BmmGui:
                     continue
                 same_repo = repo_snapshot and cached_repo == repo_snapshot
                 same_mod = isinstance(cached_mod, dict) and str(cached_mod.get("id", "")) == mod_id
+                if isinstance(cached_mod, list):
+                    same_mod = any(isinstance(item, dict) and str(item.get("id", "")) == mod_id for item in cached_mod)
                 if same_repo or same_mod:
                     cached_mods.pop(cached_repo, None)
                     removed_repos.add(cached_repo)

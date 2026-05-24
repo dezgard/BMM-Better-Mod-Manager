@@ -7,6 +7,7 @@ The current build is intentionally focused on GitHub-hosted mods and local data 
 ## Features
 
 - Tracks GitHub release repos and checks for newer mod versions.
+- Reads `bmm.nest.json` metadata so one repo can expose one or more BMM mods.
 - Installs and uninstalls BepInEx plugin ZIPs into safe BepInEx folders.
 - Enables and disables BMM-managed plugins and Ostranauts data mods.
 - Lists existing external BepInEx/data mods without taking ownership of them.
@@ -78,56 +79,200 @@ dist\BMM.exe
 
 Do not commit `build`, `dist`, `Mod_index`, backups, or generated test folders.
 
-## Modder Metadata
+## BMM Nest Files
 
-BMM can auto-detect simple release ZIPs, but proper metadata makes installs safer and more predictable.
+BMM can still auto-detect very simple ZIPs, but modders should add a nest file for anything public.
 
-For a BepInEx plugin:
+Use this file name:
 
-- Publish releases on GitHub with a ZIP asset.
-- Put the plugin DLL at the ZIP root or under `BepInEx/plugins/`.
-- Use a stable lowercase BMM id, such as `author.modname`.
-- Include the BepInEx plugin GUID from `[BepInPlugin("guid", "name", "version")]`.
-- Declare install targets if the ZIP contains more than one obvious DLL or folder.
-- Declare dependencies, conflicts, and provided capability IDs when needed.
+```text
+bmm.nest.json
+```
 
-For an Ostranauts data mod:
+Required placement for nest-based GitHub mods:
 
-- Put one top-level mod folder in the ZIP.
-- Include `mod_info.json` inside that folder.
-- BMM installs the folder into `Ostranauts_Data\Mods`.
-- BMM enables/disables data mods through `loading_order.json`.
+```text
+GitHub repo root/
+  bmm.nest.json
 
-Minimal index shape:
+Release ZIP/
+  bmm.nest.json
+  ExampleMod.dll
+  Example Data Mod/
+    mod_info.json
+```
+
+The repo copy lets BMM list and update the mod. The ZIP copy lets BMM verify that the downloaded package is for the selected mod before installing.
+
+A repo can contain one mod or several mods. Each entry in `mods` becomes one row in BMM.
+
+Supported mod types:
+
+- `bepinex` - BepInEx plugin only.
+- `data` - Ostranauts data/json mod only.
+- `hybrid` - BepInEx plugin plus an Ostranauts data mod folder.
+
+For auto-updates, each mod needs its own `asset_pattern`. This lets one GitHub repo publish multiple ZIPs, such as a full version and a lite version.
+
+### BepInEx Example
 
 ```json
 {
-  "id": "author.examplemod",
-  "name": "Example Mod",
-  "summary": "Short description shown in BMM.",
-  "authors": ["AuthorName"],
-  "categories": ["quality-of-life"],
-  "website": "https://github.com/AuthorName/ExampleMod",
-  "plugin": {
-    "guid": "com.author.ostranauts.examplemod",
-    "name": "Example Mod",
-    "dll": "ExampleMod.dll"
-  },
-  "relationships": {
-    "depends": [],
-    "recommends": [],
-    "suggests": [],
-    "conflicts": [],
-    "provides": ["com.author.ostranauts.examplemod"]
-  },
-  "release": {
-    "provider": "github",
-    "repo": "AuthorName/ExampleMod",
-    "asset_pattern": "ExampleMod-*.zip",
-    "include_prereleases": false
-  }
+  "schema": "bmm-nest-v1",
+  "mods": [
+    {
+      "id": "author.examplemod",
+      "name": "Example Mod",
+      "type": "bepinex",
+      "version": "1.0.0",
+      "game_versions": ["0.15.x"],
+      "summary": "Short description shown in BMM.",
+      "authors": ["AuthorName"],
+      "categories": ["quality-of-life"],
+      "website": "https://github.com/AuthorName/ExampleMod",
+      "asset_pattern": "ExampleMod-*.zip",
+      "bepinex": {
+        "plugin_guid": "com.author.ostranauts.examplemod",
+        "name": "Example Mod",
+        "dll": "ExampleMod.dll"
+      },
+      "relationships": {
+        "depends": [],
+        "conflicts": [],
+        "recommends": [],
+        "suggests": [],
+        "provides": []
+      }
+    }
+  ]
 }
 ```
+
+Expected ZIP:
+
+```text
+ExampleMod-1.0.0.zip
+  bmm.nest.json
+  ExampleMod.dll
+```
+
+### Data Mod Example
+
+For a data mod, "top-level mod folder" means the first folder inside the ZIP. It should contain `mod_info.json` directly inside it.
+
+```json
+{
+  "schema": "bmm-nest-v1",
+  "mods": [
+    {
+      "id": "author.exampledata",
+      "name": "Example Data Mod",
+      "type": "data",
+      "version": "1.0.0",
+      "game_versions": ["0.15.x"],
+      "summary": "Example Ostranauts JSON/data override.",
+      "authors": ["AuthorName"],
+      "categories": ["data"],
+      "asset_pattern": "ExampleData-*.zip",
+      "data": {
+        "folder": "Example Data Mod"
+      }
+    }
+  ]
+}
+```
+
+Expected ZIP:
+
+```text
+ExampleData-1.0.0.zip
+  bmm.nest.json
+  Example Data Mod/
+    mod_info.json
+    other-data-files.json
+```
+
+### Hybrid Example
+
+Use `hybrid` when the same mod needs a BepInEx DLL and an Ostranauts data folder.
+
+```json
+{
+  "schema": "bmm-nest-v1",
+  "mods": [
+    {
+      "id": "author.examplehybrid",
+      "name": "Example Hybrid Mod",
+      "type": "hybrid",
+      "version": "1.0.0",
+      "game_versions": ["0.15.x"],
+      "summary": "BepInEx plugin plus data files.",
+      "authors": ["AuthorName"],
+      "asset_pattern": "ExampleHybrid-*.zip",
+      "bepinex": {
+        "plugin_guid": "com.author.ostranauts.examplehybrid",
+        "dll": "ExampleHybrid.dll"
+      },
+      "data": {
+        "folder": "Example Hybrid Data"
+      }
+    }
+  ]
+}
+```
+
+Expected ZIP:
+
+```text
+ExampleHybrid-1.0.0.zip
+  bmm.nest.json
+  ExampleHybrid.dll
+  Example Hybrid Data/
+    mod_info.json
+```
+
+### Multiple Mods In One Repo
+
+Use separate entries and separate release ZIP patterns.
+
+```json
+{
+  "schema": "bmm-nest-v1",
+  "mods": [
+    {
+      "id": "author.fullmod",
+      "name": "Full Mod",
+      "type": "data",
+      "version": "1.0.0",
+      "game_versions": ["0.15.x"],
+      "asset_pattern": "FullMod-*.zip",
+      "data": {
+        "folder": "Full Mod"
+      }
+    },
+    {
+      "id": "author.litemod",
+      "name": "Lite Mod",
+      "type": "data",
+      "version": "1.0.0",
+      "game_versions": ["0.15.x"],
+      "asset_pattern": "LiteMod-*.zip",
+      "data": {
+        "folder": "Lite Mod"
+      }
+    }
+  ]
+}
+```
+
+Expected release assets:
+
+```text
+FullMod-1.0.0.zip
+LiteMod-1.0.0.zip
+```
+
+Do not put two separate data mods into one ZIP for BMM auto-detect. Use one ZIP per BMM mod entry.
 
 ## Current Limits
 
@@ -135,4 +280,5 @@ Minimal index shape:
 - External mods are listed read-only unless they are connected to a GitHub repo for metadata.
 - BepInEx itself must be installed separately.
 - Dependency checks exist, but automatic dependency solving is not implemented yet.
+- Removing one mod from a multi-mod GitHub repo currently removes the tracked repo source, so all generated rows from that repo disappear.
 - Deep conflict detection is planned but not complete yet.

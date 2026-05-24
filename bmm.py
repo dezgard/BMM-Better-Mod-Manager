@@ -13,6 +13,7 @@ This is intentionally dependency-free. It is a first working CLI prototype for:
 from __future__ import annotations
 
 import argparse
+import base64
 import fnmatch
 import hashlib
 import json
@@ -34,8 +35,10 @@ from typing import Any
 
 APP_NAME = "Better Mod Manager"
 INDEX_SCHEMA = "bmm-index-v1"
+NEST_SCHEMA = "bmm-nest-v1"
 STATE_SCHEMA = "bmm-state-v1"
 DEFAULT_INDEX_NAME = "bmm-index.example.json"
+NEST_FILE_NAME = "bmm.nest.json"
 MOD_INDEX_DIR_NAME = "Mod_index"
 MOD_INDEX_BACKUP_FILE_NAME = "mod-index.backup.json"
 GITHUB_API_ROOT = "https://api.github.com"
@@ -219,6 +222,53 @@ def http_get_json(url: str) -> Any:
     return json.loads(http_get(url).decode("utf-8"))
 
 
+def strip_json_comments(text: str) -> str:
+    result: list[str] = []
+    i = 0
+    in_string = False
+    escape = False
+    while i < len(text):
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        if in_string:
+            result.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            result.append(ch)
+            i += 1
+            continue
+        if ch == "/" and nxt == "/":
+            i += 2
+            while i < len(text) and text[i] not in "\r\n":
+                i += 1
+            continue
+        if ch == "/" and nxt == "*":
+            i += 2
+            while i + 1 < len(text) and not (text[i] == "*" and text[i + 1] == "/"):
+                result.append("\n" if text[i] in "\r\n" else " ")
+                i += 1
+            i += 2 if i + 1 < len(text) else 0
+            continue
+        result.append(ch)
+        i += 1
+    return "".join(result)
+
+
+def loads_json_with_comments(text: str, source: str) -> Any:
+    try:
+        return json.loads(strip_json_comments(text))
+    except json.JSONDecodeError as exc:
+        raise BmmError(f"Invalid JSON in {source}: {exc}") from exc
+
+
 def is_url(value: str) -> bool:
     return value.startswith("https://") or value.startswith("http://")
 
@@ -347,6 +397,267 @@ def validate_relationships(container: dict[str, Any], prefix: str, errors: list[
             errors.append(f"{prefix}.provides must be an array of strings")
 
 
+def string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def normalize_mod_type(value: Any, *, has_bepinex: bool = False, has_data: bool = False) -> str:
+    raw = str(value or "").replace("-", "_").strip().lower()
+    aliases = {
+        "": "",
+        "bep": "bepinex",
+        "bepinex": "bepinex",
+        "plugin": "bepinex",
+        "bepinex_plugin": "bepinex",
+        "data": "data",
+        "data_mod": "data",
+        "hybrid": "hybrid",
+        "both": "hybrid",
+        "bepinex_data": "hybrid",
+        "data_bepinex": "hybrid",
+    }
+    if raw not in aliases:
+        raise BmmError(f"Unsupported mod type: {value!r}")
+    normalized = aliases[raw]
+    if normalized:
+        return normalized
+    if has_bepinex and has_data:
+        return "hybrid"
+    if has_data:
+        return "data"
+    return "bepinex"
+
+
+def normalize_nest_install_entries(raw_install: Any, default_root: str = "bepinex_plugins") -> list[dict[str, str]]:
+    if raw_install is None:
+        return []
+    if isinstance(raw_install, list):
+        raw_entries = raw_install
+    elif isinstance(raw_install, dict):
+        raw_entries = raw_install.get("entries")
+        if raw_entries is None and "source" in raw_install and "target" in raw_install:
+            raw_entries = [raw_install]
+        if raw_entries is None:
+            raw_entries = []
+        default_root = str(raw_install.get("root") or raw_install.get("strategy") or default_root)
+    else:
+        raise BmmError("nest install must be an array or object")
+
+    entries: list[dict[str, str]] = []
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            raise BmmError("nest install entries must be objects")
+        source = str(entry.get("source") or "").replace("\\", "/").strip()
+        target = str(entry.get("target") or "").replace("\\", "/").strip()
+        if not source or not target:
+            raise BmmError("nest install entries need source and target")
+        root = normalize_install_root(entry.get("root") or default_root)
+        entries.append({"source": source, "target": target, "root": root})
+    return entries
+
+
+def infer_nest_install_entries(nest_mod: dict[str, Any], mod_type: str) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    bepinex = nest_mod.get("bepinex") if isinstance(nest_mod.get("bepinex"), dict) else {}
+    data = nest_mod.get("data") if isinstance(nest_mod.get("data"), dict) else {}
+    if mod_type in ("bepinex", "hybrid"):
+        dll = str(bepinex.get("dll") or "").replace("\\", "/").strip()
+        if dll:
+            source = str(bepinex.get("source") or dll).replace("\\", "/").strip()
+            target = str(bepinex.get("target") or PurePosixPath(dll).name).replace("\\", "/").strip()
+            root = normalize_install_root(bepinex.get("root") or "bepinex_plugins")
+            entries.append({"source": source, "target": target, "root": root})
+    if mod_type in ("data", "hybrid"):
+        folder = str(data.get("folder") or nest_mod.get("data_mod_folder") or "").replace("\\", "/").strip("/")
+        if folder:
+            source = str(data.get("source") or f"{folder}/").replace("\\", "/").strip()
+            target = str(data.get("target") or f"{folder}/").replace("\\", "/").strip()
+            if not source.endswith("/"):
+                source += "/"
+            if not target.endswith("/"):
+                target += "/"
+            entries.append({"source": source, "target": target, "root": DATA_MOD_ROOT})
+    return entries
+
+
+def github_repo_file_json(repo: str, path: str, ref: str | None = None) -> Any | None:
+    query = f"?ref={urllib.parse.quote(ref)}" if ref else ""
+    url = f"{GITHUB_API_ROOT}/repos/{repo}/contents/{urllib.parse.quote(path)}{query}"
+    try:
+        payload = http_get_json(url)
+    except BmmError as exc:
+        if "HTTP 404" in str(exc):
+            return None
+        raise
+    if not isinstance(payload, dict):
+        raise BmmError(f"Unexpected GitHub contents response for {repo}/{path}")
+    encoding = str(payload.get("encoding") or "").lower()
+    content = str(payload.get("content") or "")
+    if encoding != "base64" or not content:
+        raise BmmError(f"GitHub file is not base64 content: {repo}/{path}")
+    try:
+        raw = base64.b64decode(content).decode("utf-8-sig")
+        return loads_json_with_comments(raw, f"{repo}/{path}")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise BmmError(f"Invalid JSON in {repo}/{path}: {exc}") from exc
+
+
+def github_fetch_nest(repo: str, ref: str | None = None) -> dict[str, Any] | None:
+    raw = github_repo_file_json(repo, NEST_FILE_NAME, ref)
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise BmmError(f"{NEST_FILE_NAME} must be a JSON object")
+    if raw.get("schema") != NEST_SCHEMA:
+        raise BmmError(f"{NEST_FILE_NAME} schema must be {NEST_SCHEMA!r}")
+    return raw
+
+
+def nest_mod_to_index_mod(
+    nest_mod: dict[str, Any],
+    *,
+    repo: str,
+    repo_data: dict[str, Any] | None = None,
+    release: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    repo_data = repo_data or {}
+    owner, repo_name = repo.split("/", 1)
+    bepinex = nest_mod.get("bepinex") if isinstance(nest_mod.get("bepinex"), dict) else {}
+    data = nest_mod.get("data") if isinstance(nest_mod.get("data"), dict) else {}
+    mod_type = normalize_mod_type(nest_mod.get("type"), has_bepinex=bool(bepinex), has_data=bool(data))
+    mod_id = str(nest_mod.get("id") or "").strip()
+    if not mod_id:
+        raise BmmError("Every nest mod needs an id")
+    name = str(nest_mod.get("name") or mod_id).strip()
+    version_label = str(nest_mod.get("version") or (release or {}).get("tag_name") or "github-latest").lstrip("v")
+    asset_pattern = str(nest_mod.get("asset_pattern") or "").strip()
+    release_block = nest_mod.get("release") if isinstance(nest_mod.get("release"), dict) else {}
+    if not asset_pattern:
+        asset_pattern = str(release_block.get("asset_pattern") or "").strip()
+    include_prereleases = bool(release_block.get("include_prereleases", False))
+
+    install_entries = normalize_nest_install_entries(nest_mod.get("install"))
+    if not install_entries:
+        install_entries = infer_nest_install_entries(nest_mod, mod_type)
+    install_block = {"entries": install_entries} if install_entries else {}
+
+    plugin: dict[str, Any] | None = None
+    if mod_type in ("bepinex", "hybrid"):
+        plugin = {
+            "guid": str(bepinex.get("plugin_guid") or bepinex.get("guid") or mod_id).strip(),
+            "name": str(bepinex.get("name") or name).strip(),
+            "dll": str(bepinex.get("dll") or "").strip(),
+        }
+
+    rel = nest_mod.get("relationships") if isinstance(nest_mod.get("relationships"), dict) else {}
+    relationships = {key: list(rel.get(key) or []) if isinstance(rel.get(key), list) else [] for key in RELATIONSHIP_KEYS}
+    for provided in string_list(nest_mod.get("provides")):
+        relationships["provides"].append(provided)
+    if plugin and plugin["guid"] and plugin["guid"] not in relationships["provides"]:
+        relationships["provides"].append(plugin["guid"])
+    if mod_id not in relationships["provides"]:
+        relationships["provides"].append(mod_id)
+
+    website = str(nest_mod.get("website") or repo_data.get("html_url") or f"https://github.com/{repo}").strip()
+    notes = string_list(nest_mod.get("notes"))
+    notes.insert(0, f"BMM nest file: {NEST_FILE_NAME}")
+    notes.insert(1, f"Package type: {mod_type}")
+    if asset_pattern:
+        notes.append(f"Release asset pattern: {asset_pattern}")
+
+    index_mod: dict[str, Any] = {
+        "id": mod_id,
+        "type": mod_type,
+        "name": name,
+        "summary": str(nest_mod.get("summary") or repo_data.get("description") or f"GitHub mod from {repo}").strip(),
+        "authors": string_list(nest_mod.get("authors")) or [owner],
+        "categories": string_list(nest_mod.get("categories")) or ["github", mod_type],
+        "website": website,
+        "notes": notes,
+        "nest": {
+            "schema": NEST_SCHEMA,
+            "file": NEST_FILE_NAME,
+            "id": mod_id,
+        },
+        "relationships": relationships,
+        "release": {
+            "provider": "github",
+            "repo": repo,
+            "include_prereleases": include_prereleases,
+        },
+        "versions": [],
+    }
+    if plugin:
+        index_mod["plugin"] = plugin
+    data_folder = str(data.get("folder") or nest_mod.get("data_mod_folder") or "").strip()
+    if data_folder:
+        index_mod["data_mod_folder"] = data_folder
+    if asset_pattern:
+        index_mod["release"]["asset_pattern"] = asset_pattern
+    if install_block:
+        index_mod["install"] = install_block
+
+    bepinex_version = nest_mod.get("bepinex_version")
+    if not bepinex_version and isinstance(nest_mod.get("bepinex"), str):
+        bepinex_version = nest_mod.get("bepinex")
+
+    version_entry: dict[str, Any] = {
+        "version": version_label,
+        "game_versions": string_list(nest_mod.get("game_versions")),
+        "bepinex": str(bepinex_version or "").strip(),
+        "relationships": {key: list(relationships.get(key, [])) if key != "provides" else [] for key in RELATIONSHIP_KEYS if key != "provides"},
+    }
+    if install_block:
+        version_entry["install"] = install_block
+    if release:
+        try:
+            asset = find_release_asset(release, asset_pattern or None)
+            download: dict[str, Any] = {
+                "type": "url",
+                "url": str(asset["browser_download_url"]),
+                "source_label": f"{repo} {release.get('tag_name')} {asset.get('name')}",
+            }
+            digest = str(asset.get("digest") or "")
+            if digest.startswith("sha256:"):
+                download["sha256"] = digest.replace("sha256:", "", 1)
+            version_entry["download"] = download
+        except BmmError:
+            pass
+    index_mod["versions"] = [version_entry]
+    return index_mod
+
+
+def nest_to_index_mods(
+    nest: dict[str, Any],
+    *,
+    repo: str,
+    repo_data: dict[str, Any] | None = None,
+    release: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    mods = nest.get("mods")
+    if not isinstance(mods, list) or not mods:
+        raise BmmError(f"{NEST_FILE_NAME} needs a non-empty mods array")
+    result = []
+    seen: set[str] = set()
+    for i, nest_mod in enumerate(mods):
+        if not isinstance(nest_mod, dict):
+            raise BmmError(f"{NEST_FILE_NAME} mods[{i}] must be an object")
+        index_mod = nest_mod_to_index_mod(nest_mod, repo=repo, repo_data=repo_data, release=release)
+        mod_id = str(index_mod.get("id") or "")
+        if mod_id in seen:
+            raise BmmError(f"{NEST_FILE_NAME} duplicate mod id: {mod_id}")
+        seen.add(mod_id)
+        result.append(index_mod)
+    errors = validate_index({"schema": INDEX_SCHEMA, "game": {"id": "ostranauts"}, "mods": result})
+    if errors:
+        raise BmmError(f"{NEST_FILE_NAME} generated invalid BMM entries: " + "; ".join(errors[:6]))
+    return result
+
+
 def validate_install_block(install: Any, prefix: str, errors: list[str]) -> None:
     if install is None:
         return
@@ -409,7 +720,7 @@ def validate_index(index: dict[str, Any]) -> list[str]:
         if not isinstance(mod.get("authors"), list) or not mod["authors"]:
             errors.append(f"{prefix}.authors must be a non-empty array")
         mod_type = str(mod.get("type") or "bepinex").strip().lower()
-        if mod_type not in ("bepinex", "plugin", "data", "data_mod"):
+        if mod_type not in ("bepinex", "plugin", "data", "data_mod", "hybrid"):
             errors.append(f"{prefix}.type is unsupported: {mod.get('type')}")
         plugin = mod.get("plugin")
         if mod_type not in ("data", "data_mod"):
@@ -790,6 +1101,39 @@ def detect_data_mod_archive(archive: Path) -> dict[str, Any] | None:
             "target": folder + "/",
             "metadata": metadata,
         }
+
+
+def read_archive_nest(archive: Path) -> dict[str, Any] | None:
+    with zipfile.ZipFile(archive) as zf:
+        names = {normalized_zip_name(info.filename): info for info in zf.infolist() if not info.is_dir()}
+        if NEST_FILE_NAME not in names:
+            return None
+        try:
+            with zf.open(NEST_FILE_NAME) as fh:
+                raw = loads_json_with_comments(fh.read().decode("utf-8-sig"), f"{archive}:{NEST_FILE_NAME}")
+        except (KeyError, UnicodeDecodeError) as exc:
+            raise BmmError(f"Invalid JSON in archive file {NEST_FILE_NAME}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise BmmError(f"{NEST_FILE_NAME} in archive must be a JSON object")
+    if raw.get("schema") != NEST_SCHEMA:
+        raise BmmError(f"{NEST_FILE_NAME} in archive schema must be {NEST_SCHEMA!r}")
+    return raw
+
+
+def verify_archive_nest_for_mod(archive: Path, mod: dict[str, Any]) -> None:
+    if not isinstance(mod.get("nest"), dict):
+        return
+    nest = read_archive_nest(archive)
+    if nest is None:
+        raise BmmError(f"{mod['id']} was generated from {NEST_FILE_NAME}, but the archive does not contain {NEST_FILE_NAME}.")
+    mods = nest.get("mods")
+    if not isinstance(mods, list):
+        raise BmmError(f"{NEST_FILE_NAME} in archive needs a mods array")
+    wanted = str(mod.get("id") or "")
+    for item in mods:
+        if isinstance(item, dict) and str(item.get("id") or "") == wanted:
+            return
+    raise BmmError(f"{NEST_FILE_NAME} in archive does not contain mod id {wanted}.")
 
 
 def validate_data_mod_archive_json(archive: Path, folder: str) -> None:
@@ -1175,11 +1519,18 @@ def command_install(args: argparse.Namespace) -> int:
     version_label = str((version or {}).get("version") or "github-latest")
     backup_root = rt.backup_dir / mod["id"] / ("install-" + stamp())
     data_folder = plan_data_mod_folder(plan)
+    verify_archive_nest_for_mod(archive, mod)
     if DATA_MOD_ROOT in roots and not data_folder:
         raise BmmError("Data mod installs must target exactly one folder under Ostranauts_Data/Mods.")
     if data_folder:
         validate_data_mod_archive_json(archive, data_folder)
-    mod_type = "data" if data_folder else "bepinex"
+    has_bepinex_files = bool(roots - {DATA_MOD_ROOT})
+    if data_folder and has_bepinex_files:
+        mod_type = "hybrid"
+    elif data_folder:
+        mod_type = "data"
+    else:
+        mod_type = "bepinex"
 
     print(f"Install {mod['name']} {version_label}")
     print(f"Archive: {archive}")
@@ -1342,12 +1693,21 @@ def change_mod_enabled(
         record["load_order_path"] = str(load_order)
         if did_change:
             changed.append(f"[{DATA_MOD_ROOT}] {data_folder} {'enabled' if enable else 'disabled'} in {load_order}")
+
+    plugin_files = [
+        file_record
+        for file_record in record.get("files", [])
+        if isinstance(file_record, dict)
+        and str(file_record.get("root") or "bepinex_plugins") != DATA_MOD_ROOT
+        and str(file_record.get("path") or "").lower().endswith(".dll")
+    ]
+    if not plugin_files:
         return changed
 
     ensure_bepinex_dir(game_dir)
 
     if enable:
-        for file_record in record.get("files", []):
+        for file_record in plugin_files:
             disabled_rel = file_record.get("disabled_path")
             original_rel = file_record.get("path")
             if not disabled_rel or not original_rel:
@@ -1364,7 +1724,7 @@ def change_mod_enabled(
             file_record.pop("disabled_path", None)
         record["enabled"] = True
     else:
-        for file_record in record.get("files", []):
+        for file_record in plugin_files:
             original_rel = str(file_record.get("path", ""))
             if not original_rel.lower().endswith(".dll"):
                 continue
