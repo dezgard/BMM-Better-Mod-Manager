@@ -72,6 +72,10 @@ PROFILE_BUTTON_WIDTH = 12
 TOP_ENTRY_WIDTH = 84
 TOP_BUTTON_WIDTH = 14
 TOP_WIDE_BUTTON_WIDTH = 16
+PLUGIN_ROW_PREFIX = "plugin::"
+DATA_ROW_PREFIX = "data::"
+DATA_FOLDER_ROW_PREFIX = "data-folder::"
+CORE_ROW_ID = "data::core"
 
 
 def write_json_atomic(path: Path, data: Any) -> None:
@@ -115,6 +119,10 @@ class BmmGui:
         self.mods: list[dict[str, Any]] = []
         self.external_mods: list[dict[str, Any]] = []
         self.mods_by_id: dict[str, dict[str, Any]] = {}
+        self.row_mod_ids: dict[str, str] = {}
+        self.row_data_folders: dict[str, str] = {}
+        self.active_tree: ttk.Treeview | None = None
+        self.data_load_order_dirty = False
         self.mod_index_dir = self.application_dir() / MOD_INDEX_DIR_NAME
         self.runtime_index_path = self.mod_index_dir / MOD_INDEX_FILE_NAME
         self.mod_index_backup_path = self.mod_index_dir / MOD_INDEX_BACKUP_FILE_NAME
@@ -269,6 +277,7 @@ class BmmGui:
         left = ttk.Frame(content, padding=(10, 4, 6, 6))
         left.columnconfigure(0, weight=1)
         left.rowconfigure(2, weight=1)
+        left.rowconfigure(5, weight=1)
         content.add(left, minsize=LEFT_PANE_MIN_WIDTH, stretch="always")
 
         filter_bar = ttk.Frame(left)
@@ -277,31 +286,67 @@ class BmmGui:
         ttk.Label(filter_bar, text="Search").grid(row=0, column=0, sticky="w", padx=(0, 6))
         search = ttk.Entry(filter_bar, textvariable=self.search_var, width=TOP_ENTRY_WIDTH)
         search.grid(row=0, column=1, sticky="w")
-        self.search_var.trace_add("write", lambda *_: self.populate_mod_table())
+        self.search_var.trace_add("write", lambda *_: self.on_search_changed())
 
-        columns = ("status", "latest", "id", "name", "category")
-        self.mod_tree = ttk.Treeview(left, columns=columns, show="headings", selectmode="browse")
-        self.mod_tree.heading("status", text="Status")
-        self.mod_tree.heading("latest", text="Latest")
-        self.mod_tree.heading("id", text="ID")
-        self.mod_tree.heading("name", text="Name")
-        self.mod_tree.heading("category", text="Category")
-        self.mod_tree.column("status", width=150, anchor="w", stretch=False)
-        self.mod_tree.column("latest", width=80, anchor="w", stretch=False)
-        self.mod_tree.column("id", width=185, anchor="w", stretch=False)
-        self.mod_tree.column("name", width=260, anchor="w", stretch=True)
-        self.mod_tree.column("category", width=155, anchor="w", stretch=False)
-        self.mod_tree.tag_configure("installed", background="#18844f", foreground="#f0fff5")
-        self.mod_tree.tag_configure("disabled", background="#8b2822", foreground="#ffe2dc")
-        self.mod_tree.tag_configure("external", background="#5a4930", foreground="#fff0d2")
-        self.mod_tree.tag_configure("external_linked", background="#345b58", foreground="#effffc")
-        self.mod_tree.tag_configure("missing", background=COLOR_FIELD, foreground=COLOR_TEXT)
-        self.mod_tree.grid(row=2, column=0, sticky="nsew")
-        self.mod_tree.bind("<<TreeviewSelect>>", lambda _event: self.show_selected_details())
+        ttk.Label(left, text="BepInEx / Plugin Mods", style="Header.TLabel").grid(row=1, column=0, sticky="w", pady=(0, 4))
+        plugin_frame = ttk.Frame(left)
+        plugin_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 8))
+        plugin_frame.columnconfigure(0, weight=1)
+        plugin_frame.rowconfigure(0, weight=1)
+        plugin_columns = ("status", "latest", "id", "name", "category")
+        self.plugin_tree = self.create_mod_tree(plugin_frame, plugin_columns)
+        self.plugin_tree.heading("status", text="Status")
+        self.plugin_tree.heading("latest", text="Latest")
+        self.plugin_tree.heading("id", text="ID")
+        self.plugin_tree.heading("name", text="Name")
+        self.plugin_tree.heading("category", text="Category")
+        self.plugin_tree.column("status", width=150, anchor="w", stretch=False)
+        self.plugin_tree.column("latest", width=80, anchor="w", stretch=False)
+        self.plugin_tree.column("id", width=185, anchor="w", stretch=False)
+        self.plugin_tree.column("name", width=260, anchor="w", stretch=True)
+        self.plugin_tree.column("category", width=155, anchor="w", stretch=False)
+        self.plugin_tree.grid(row=0, column=0, sticky="nsew")
+        self.plugin_tree.bind("<<TreeviewSelect>>", lambda _event: self.on_tree_selected(self.plugin_tree))
+        plugin_scroll = ttk.Scrollbar(plugin_frame, orient=tk.VERTICAL, command=self.plugin_tree.yview)
+        plugin_scroll.grid(row=0, column=1, sticky="ns")
+        self.plugin_tree.configure(yscrollcommand=plugin_scroll.set)
 
-        yscroll = ttk.Scrollbar(left, orient=tk.VERTICAL, command=self.mod_tree.yview)
-        yscroll.grid(row=2, column=1, sticky="ns")
-        self.mod_tree.configure(yscrollcommand=yscroll.set)
+        ttk.Label(left, text="Data Mods / Load Order", style="Header.TLabel").grid(row=3, column=0, sticky="w", pady=(0, 4))
+        data_frame = ttk.Frame(left)
+        data_frame.grid(row=5, column=0, sticky="nsew")
+        data_frame.columnconfigure(0, weight=1)
+        data_frame.rowconfigure(0, weight=1)
+        data_columns = ("load", "status", "latest", "folder", "name", "category")
+        self.data_tree = self.create_mod_tree(data_frame, data_columns)
+        self.data_tree.heading("load", text="Load #")
+        self.data_tree.heading("status", text="Status")
+        self.data_tree.heading("latest", text="Latest")
+        self.data_tree.heading("folder", text="Folder")
+        self.data_tree.heading("name", text="Name")
+        self.data_tree.heading("category", text="Category")
+        self.data_tree.column("load", width=70, anchor="center", stretch=False)
+        self.data_tree.column("status", width=150, anchor="w", stretch=False)
+        self.data_tree.column("latest", width=80, anchor="w", stretch=False)
+        self.data_tree.column("folder", width=190, anchor="w", stretch=False)
+        self.data_tree.column("name", width=250, anchor="w", stretch=True)
+        self.data_tree.column("category", width=145, anchor="w", stretch=False)
+        self.data_tree.grid(row=0, column=0, sticky="nsew")
+        self.data_tree.bind("<<TreeviewSelect>>", lambda _event: self.on_tree_selected(self.data_tree))
+        data_scroll = ttk.Scrollbar(data_frame, orient=tk.VERTICAL, command=self.data_tree.yview)
+        data_scroll.grid(row=0, column=1, sticky="ns")
+        self.data_tree.configure(yscrollcommand=data_scroll.set)
+
+        load_controls = ttk.Frame(left)
+        load_controls.grid(row=6, column=0, sticky="ew", pady=(6, 0))
+        for col in range(4):
+            load_controls.columnconfigure(col, weight=1)
+        move_up = ttk.Button(load_controls, text="Move Up", command=lambda: self.move_data_load_order(-1))
+        move_down = ttk.Button(load_controls, text="Move Down", command=lambda: self.move_data_load_order(1))
+        save_order = ttk.Button(load_controls, text="Save Load Order", command=self.save_data_load_order)
+        move_up.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        move_down.grid(row=0, column=1, sticky="ew", padx=(0, 6))
+        save_order.grid(row=0, column=2, columnspan=2, sticky="ew")
+        self.action_buttons.extend([move_up, move_down, save_order])
 
         right = ttk.Frame(content, padding=(6, 4, 10, 6))
         right.columnconfigure(0, weight=1)
@@ -420,6 +465,25 @@ class BmmGui:
         button = ttk.Button(parent, text=text, command=command)
         button.grid(row=row, column=col, columnspan=columnspan, sticky="ew", padx=3, pady=3)
         self.action_buttons.append(button)
+
+    def create_mod_tree(self, parent: ttk.Frame, columns: tuple[str, ...]) -> ttk.Treeview:
+        tree = ttk.Treeview(parent, columns=columns, show="headings", selectmode="browse")
+        tree.tag_configure("installed", background="#18844f", foreground="#f0fff5")
+        tree.tag_configure("disabled", background="#8b2822", foreground="#ffe2dc")
+        tree.tag_configure("external", background="#5a4930", foreground="#fff0d2")
+        tree.tag_configure("external_linked", background="#345b58", foreground="#effffc")
+        tree.tag_configure("missing", background=COLOR_FIELD, foreground=COLOR_TEXT)
+        tree.tag_configure("core", background=COLOR_PANEL_2, foreground=COLOR_CYAN)
+        tree.tag_configure("unknown", background="#473a2a", foreground="#ffe9c4")
+        return tree
+
+    def on_tree_selected(self, tree: ttk.Treeview) -> None:
+        if not tree.selection():
+            return
+        self.active_tree = tree
+        other = self.data_tree if tree is self.plugin_tree else self.plugin_tree
+        other.selection_remove(other.selection())
+        self.show_selected_details()
 
     def _sync_detail_scrollregion(self, _event: tk.Event | None = None) -> None:
         self.detail_canvas.configure(scrollregion=self.detail_canvas.bbox("all"))
@@ -762,13 +826,44 @@ class BmmGui:
             return False, "BepInEx is not installed for this game folder."
         if not plugins.exists():
             return False, "BepInEx is present, but BepInEx\\plugins is missing."
-        return True, "BepInEx detected."
+        warnings = bmm.loading_order_warnings(root)
+        if warnings:
+            return False, "BepInEx detected. " + warnings[0]
+        load_order = bmm.display_game_path(root, bmm.loading_order_path(root))
+        return True, f"BepInEx detected. Data load order: {load_order}"
 
     def update_bepinex_status(self) -> bool:
         ok, message = self.check_bepinex_status()
         self.bepinex_status_var.set(message)
         self.bepinex_status_label.configure(style="Ok.TLabel" if ok else "Warning.TLabel")
         return ok
+
+    def current_game_dir_path(self) -> Path | None:
+        raw = str(self.game_dir_override or self.game_dir_var.get() or self.config.get("game_dir") or "").strip()
+        if not raw:
+            return None
+        return Path(raw).expanduser()
+
+    def record_data_folder(self, record: dict[str, Any]) -> str:
+        data_folder = str(record.get("data_mod_folder") or "").strip()
+        if data_folder:
+            return data_folder
+        for file_record in record.get("files", []):
+            if not isinstance(file_record, dict) or file_record.get("root") != bmm.DATA_MOD_ROOT:
+                continue
+            rel = str(file_record.get("path") or "").replace("\\", "/").strip("/")
+            if rel:
+                return rel.split("/", 1)[0]
+        return ""
+
+    def record_data_load_active(self, record: dict[str, Any]) -> bool | None:
+        data_folder = self.record_data_folder(record)
+        if not data_folder:
+            return None
+        game_dir = self.current_game_dir_path()
+        if not game_dir or not game_dir.exists():
+            return None
+        return bmm.data_mod_enabled(game_dir, data_folder)
 
     def external_base_path(self, relative: str) -> str:
         normalized = relative.replace("\\", "/").strip("/")
@@ -1001,55 +1096,267 @@ class BmmGui:
                 self.log(f"Load failed: {exc}")
                 messagebox.showerror(APP_TITLE, str(exc))
 
-    def populate_mod_table(self) -> None:
-        selected = self.selected_mod_id()
-        for item in self.mod_tree.get_children():
-            self.mod_tree.delete(item)
-        filter_text = self.search_var.get().strip().lower()
-        installed = self.state.get("installed", {}) if isinstance(self.state, dict) else {}
-        for mod in sorted(self.mods, key=lambda item: str(item.get("name", "")).lower()):
-            mod_id = str(mod.get("id", ""))
-            haystack = " ".join(
-                [
-                    mod_id,
-                    str(mod.get("name", "")),
-                    str(mod.get("summary", "")),
-                    " ".join(str(c) for c in mod.get("categories", []) if isinstance(c, str)),
-                ]
-            ).lower()
-            if filter_text and filter_text not in haystack:
-                continue
-            declared = bmm.latest_declared_version(mod)
-            external = mod.get("external") if self.is_external_mod(mod) else None
-            if isinstance(external, dict):
-                latest = str(external.get("release") or "linked") if external.get("repo") else "external"
-                status = "external"
-                tag = "external_linked" if external.get("repo") else "external"
-                if not external.get("enabled", True):
-                    status = "external disabled"
-                    tag = "disabled"
+    def on_search_changed(self) -> None:
+        if self.data_load_order_dirty:
+            self.data_load_order_dirty = False
+            self.status_var.set("Unsaved load-order edits were discarded by the search filter.")
+        self.populate_mod_table()
+
+    def mod_matches_filter(self, mod: dict[str, Any], filter_text: str, extra: str = "") -> bool:
+        if not filter_text:
+            return True
+        mod_id = str(mod.get("id", ""))
+        haystack = " ".join(
+            [
+                mod_id,
+                str(mod.get("name", "")),
+                str(mod.get("summary", "")),
+                extra,
+                " ".join(str(c) for c in mod.get("categories", []) if isinstance(c, str)),
+            ]
+        ).lower()
+        return filter_text in haystack
+
+    def mod_type_value(self, mod: dict[str, Any], record: dict[str, Any] | None = None) -> str:
+        if isinstance(record, dict) and record.get("type"):
+            return str(record.get("type") or "").lower()
+        return str(mod.get("type") or "").lower()
+
+    def mod_data_folder(self, mod: dict[str, Any], record: dict[str, Any] | None = None) -> str:
+        if self.is_external_mod(mod):
+            external = mod.get("external") if isinstance(mod.get("external"), dict) else {}
+            if str(external.get("kind") or "") == "data":
+                return str(external.get("path") or "").strip()
+        if isinstance(record, dict):
+            data_folder = self.record_data_folder(record)
+            if data_folder:
+                return data_folder
+        return str(mod.get("data_mod_folder") or "").strip()
+
+    def mod_has_plugin_side(self, mod: dict[str, Any], record: dict[str, Any] | None = None) -> bool:
+        if self.is_external_mod(mod):
+            external = mod.get("external") if isinstance(mod.get("external"), dict) else {}
+            return str(external.get("kind") or "bepinex") == "bepinex"
+        type_value = self.mod_type_value(mod, record)
+        if type_value in ("bepinex", "plugin", "hybrid"):
+            return True
+        if type_value in ("data", "data_mod"):
+            return False
+        if isinstance(record, dict):
+            for file_record in record.get("files", []):
+                if isinstance(file_record, dict) and str(file_record.get("root") or "bepinex_plugins") != bmm.DATA_MOD_ROOT:
+                    return True
+        plugin = mod.get("plugin", {}) if isinstance(mod.get("plugin"), dict) else {}
+        return bool(plugin.get("dll") or plugin.get("guid"))
+
+    def mod_has_data_side(self, mod: dict[str, Any], record: dict[str, Any] | None = None) -> bool:
+        if self.is_external_mod(mod):
+            external = mod.get("external") if isinstance(mod.get("external"), dict) else {}
+            return str(external.get("kind") or "") == "data"
+        type_value = self.mod_type_value(mod, record)
+        if type_value in ("data", "data_mod", "hybrid"):
+            return True
+        return bool(self.mod_data_folder(mod, record))
+
+    def mod_latest_label(self, mod: dict[str, Any]) -> str:
+        external = mod.get("external") if self.is_external_mod(mod) else None
+        if isinstance(external, dict):
+            return str(external.get("release") or "linked") if external.get("repo") else "external"
+        declared = bmm.latest_declared_version(mod)
+        return str(declared.get("version")) if declared else "github"
+
+    def mod_status_tag(self, mod: dict[str, Any], section: str) -> tuple[str, str]:
+        if self.is_external_mod(mod):
+            external = mod.get("external") if isinstance(mod.get("external"), dict) else {}
+            enabled = bool(external.get("enabled", True))
+            if section == "data":
+                status = "external active" if enabled else "external disabled"
             else:
-                latest = str(declared.get("version")) if declared else "github"
-                record = installed.get(mod_id)
-                status = "not installed"
-                tag = "missing"
-                if isinstance(record, dict):
-                    status = f"installed {record.get('version', '?')}"
-                    tag = "installed"
-                    if not record.get("enabled", True):
-                        status += " disabled"
-                        tag = "disabled"
-            categories = ", ".join(str(c) for c in mod.get("categories", []) if isinstance(c, str))
-            self.mod_tree.insert(
+                status = "external" if enabled else "external disabled"
+            if not enabled:
+                return status, "disabled"
+            return status, "external_linked" if external.get("repo") else "external"
+
+        mod_id = str(mod.get("id", ""))
+        installed = self.state.get("installed", {}) if isinstance(self.state, dict) else {}
+        record = installed.get(mod_id) if isinstance(installed, dict) else None
+        if not isinstance(record, dict):
+            return "not installed", "missing"
+
+        status = f"installed {record.get('version', '?')}"
+        tag = "installed"
+        if section == "data":
+            load_active = self.record_data_load_active(record)
+            if load_active is False:
+                status += " disabled"
+                if record.get("enabled", True):
+                    status += " (load order)"
+                return status, "disabled"
+            if load_active is True:
+                status += " active"
+        if not record.get("enabled", True):
+            status += " disabled"
+            tag = "disabled"
+        return status, tag
+
+    def current_data_load_order(self) -> list[str]:
+        game_dir = self.current_game_dir_path()
+        if not game_dir or not game_dir.exists():
+            return ["core"]
+        try:
+            path, order = bmm.load_loading_order(game_dir)
+            if not path.exists() and bmm.legacy_loading_order_path(game_dir).exists():
+                bmm.merge_legacy_loading_order(game_dir, order)
+        except bmm.BmmError:
+            return ["core"]
+        values = bmm.loading_order_values(order, "aLoadOrder")
+        return values or ["core"]
+
+    def data_tree_iid_for_mod(self, mod_id: str) -> str:
+        return DATA_ROW_PREFIX + mod_id
+
+    def plugin_tree_iid_for_mod(self, mod_id: str) -> str:
+        return PLUGIN_ROW_PREFIX + mod_id
+
+    def data_tree_iid_for_folder(self, folder: str) -> str:
+        return DATA_FOLDER_ROW_PREFIX + folder.lower()
+
+    def insert_plugin_row(self, mod: dict[str, Any]) -> None:
+        mod_id = str(mod.get("id", ""))
+        iid = self.plugin_tree_iid_for_mod(mod_id)
+        status, tag = self.mod_status_tag(mod, "plugin")
+        categories = ", ".join(str(c) for c in mod.get("categories", []) if isinstance(c, str))
+        self.row_mod_ids[iid] = mod_id
+        self.plugin_tree.insert(
+            "",
+            "end",
+            iid=iid,
+            values=(status, self.mod_latest_label(mod), mod_id, mod.get("name", ""), categories),
+            tags=(tag,),
+        )
+
+    def insert_data_mod_row(self, mod: dict[str, Any], folder: str, load_number: str = "") -> None:
+        mod_id = str(mod.get("id", ""))
+        iid = self.data_tree_iid_for_mod(mod_id)
+        status, tag = self.mod_status_tag(mod, "data")
+        categories = ", ".join(str(c) for c in mod.get("categories", []) if isinstance(c, str))
+        self.row_mod_ids[iid] = mod_id
+        self.row_data_folders[iid] = folder
+        self.data_tree.insert(
+            "",
+            "end",
+            iid=iid,
+            values=(load_number, status, self.mod_latest_label(mod), folder, mod.get("name", ""), categories),
+            tags=(tag,),
+        )
+
+    def insert_data_folder_row(self, folder: str, load_number: str) -> None:
+        if folder == "core":
+            self.row_data_folders[CORE_ROW_ID] = "core"
+            self.data_tree.insert(
                 "",
                 "end",
-                iid=mod_id,
-                values=(status, latest, mod_id, mod.get("name", ""), categories),
-                tags=(tag,),
+                iid=CORE_ROW_ID,
+                values=("locked", "game core", "", "core", "Ostranauts Core Data", "base game"),
+                tags=("core",),
             )
-        if selected and self.mod_tree.exists(selected):
-            self.mod_tree.selection_set(selected)
-            self.mod_tree.see(selected)
+            return
+        iid = self.data_tree_iid_for_folder(folder)
+        self.row_data_folders[iid] = folder
+        self.data_tree.insert(
+            "",
+            "end",
+            iid=iid,
+            values=(load_number, "load-order only", "", folder, "Unknown data mod folder", "not indexed"),
+            tags=("unknown",),
+        )
+
+    def populate_mod_table(self) -> None:
+        selected_mod = self.selected_mod_id()
+        selected_folder = self.selected_data_folder()
+        selected_was_data = self.active_tree is self.data_tree
+        for tree in (self.plugin_tree, self.data_tree):
+            for item in tree.get_children():
+                tree.delete(item)
+        self.row_mod_ids = {}
+        self.row_data_folders = {}
+
+        filter_text = self.search_var.get().strip().lower()
+        installed = self.state.get("installed", {}) if isinstance(self.state, dict) else {}
+        if not isinstance(installed, dict):
+            installed = {}
+
+        all_data_mods: list[tuple[dict[str, Any], str]] = []
+        data_by_folder: dict[str, tuple[dict[str, Any], str]] = {}
+        for mod in self.mods:
+            mod_id = str(mod.get("id", ""))
+            record = installed.get(mod_id)
+            if not isinstance(record, dict):
+                record = None
+            if self.mod_has_data_side(mod, record):
+                folder = self.mod_data_folder(mod, record)
+                if folder:
+                    all_data_mods.append((mod, folder))
+                    data_by_folder.setdefault(folder.lower(), (mod, folder))
+
+        for mod in sorted(self.mods, key=lambda item: str(item.get("name", "")).lower()):
+            mod_id = str(mod.get("id", ""))
+            record = installed.get(mod_id)
+            if not isinstance(record, dict):
+                record = None
+            if self.mod_has_plugin_side(mod, record) and self.mod_matches_filter(mod, filter_text):
+                self.insert_plugin_row(mod)
+
+        load_order = self.current_data_load_order()
+        shown_data_ids: set[str] = set()
+        data_position = 0
+        for folder in load_order:
+            if folder == "core":
+                if not filter_text or "core".find(filter_text) >= 0 or "ostranauts core data".find(filter_text) >= 0:
+                    self.insert_data_folder_row("core", "locked")
+                continue
+            data_position += 1
+            match = data_by_folder.get(folder.lower())
+            if match:
+                mod, real_folder = match
+                if not self.mod_matches_filter(mod, filter_text, real_folder):
+                    continue
+                self.insert_data_mod_row(mod, real_folder, str(data_position))
+                shown_data_ids.add(str(mod.get("id", "")))
+                continue
+            if filter_text and filter_text not in folder.lower():
+                continue
+            self.insert_data_folder_row(folder, str(data_position))
+
+        for mod, folder in sorted(all_data_mods, key=lambda item: (item[1].lower(), str(item[0].get("name", "")).lower())):
+            mod_id = str(mod.get("id", ""))
+            if mod_id in shown_data_ids:
+                continue
+            if not self.mod_matches_filter(mod, filter_text, folder):
+                continue
+            self.insert_data_mod_row(mod, folder, "")
+
+        restored = False
+        if selected_mod:
+            preferred = self.data_tree_iid_for_mod(selected_mod) if selected_was_data else self.plugin_tree_iid_for_mod(selected_mod)
+            fallback = self.plugin_tree_iid_for_mod(selected_mod) if selected_was_data else self.data_tree_iid_for_mod(selected_mod)
+            for tree, iid in ((self.data_tree if selected_was_data else self.plugin_tree, preferred), (self.plugin_tree if selected_was_data else self.data_tree, fallback)):
+                if tree.exists(iid):
+                    self.active_tree = tree
+                    tree.selection_set(iid)
+                    tree.see(iid)
+                    restored = True
+                    break
+        elif selected_folder:
+            for iid, folder in self.row_data_folders.items():
+                if folder == selected_folder and self.data_tree.exists(iid):
+                    self.active_tree = self.data_tree
+                    self.data_tree.selection_set(iid)
+                    self.data_tree.see(iid)
+                    restored = True
+                    break
+        if not restored:
+            self.active_tree = None
         self.show_selected_details()
 
     def populate_profiles(self) -> None:
@@ -1062,10 +1369,30 @@ class BmmGui:
             self.profile_var.set("")
 
     def selected_mod_id(self) -> str | None:
-        selection = self.mod_tree.selection()
-        if not selection:
+        row_id = self.selected_row_id()
+        if not row_id:
             return None
-        return str(selection[0])
+        return self.row_mod_ids.get(row_id)
+
+    def selected_row_id(self) -> str | None:
+        trees = []
+        if self.active_tree is not None:
+            trees.append(self.active_tree)
+        for tree in (getattr(self, "plugin_tree", None), getattr(self, "data_tree", None)):
+            if tree is not None and tree not in trees:
+                trees.append(tree)
+        for tree in trees:
+            selection = tree.selection()
+            if selection:
+                self.active_tree = tree
+                return str(selection[0])
+        return None
+
+    def selected_data_folder(self) -> str | None:
+        row_id = self.selected_row_id()
+        if not row_id:
+            return None
+        return self.row_data_folders.get(row_id)
 
     def selected_mod(self) -> dict[str, Any] | None:
         mod_id = self.selected_mod_id()
@@ -1192,8 +1519,30 @@ class BmmGui:
         return row + 1
 
     def show_selected_details(self) -> None:
+        row_id = self.selected_row_id()
         mod = self.selected_mod()
         self.clear_details()
+        if row_id == CORE_ROW_ID:
+            row = 0
+            row = self.add_detail_heading("Ostranauts Core Data", row)
+            row = self.add_detail_row(row, "Load Order", "locked")
+            row = self.add_detail_row(row, "Folder", "core")
+            self.add_detail_text(row, "Core is the base game data entry. BMM keeps it first and does not move or remove it.")
+            return
+        if not mod and row_id and row_id in self.row_data_folders:
+            folder = self.row_data_folders[row_id]
+            row = 0
+            row = self.add_detail_heading("Load-order folder", row)
+            row = self.add_detail_row(row, "Folder", folder)
+            row = self.add_detail_row(row, "BMM Managed", "no")
+            game_dir = self.current_game_dir_path()
+            if game_dir:
+                row = self.add_detail_row(row, "Load Order", bmm.display_game_path(game_dir, bmm.loading_order_path(game_dir)))
+            self.add_detail_text(
+                row,
+                "This folder is present in the game's data load order, but BMM could not match it to an installed or indexed data mod.",
+            )
+            return
         if not mod:
             self.add_detail_text(0, "Select a mod to see details.")
             return
@@ -1208,6 +1557,9 @@ class BmmGui:
             row = self.add_detail_row(row, "Path", external.get("path", ""))
             row = self.add_detail_row(row, "Enabled", external.get("enabled", True))
             if kind == "data":
+                game_dir = self.current_game_dir_path()
+                if game_dir:
+                    row = self.add_detail_row(row, "Load Order", bmm.display_game_path(game_dir, bmm.loading_order_path(game_dir)))
                 row = self.add_detail_row(row, "Author", external.get("author", ""))
                 row = self.add_detail_row(row, "Game Version", external.get("game_version", ""))
                 row = self.add_detail_row(row, "Mod Version", external.get("mod_version", ""))
@@ -1241,8 +1593,21 @@ class BmmGui:
         is_data_mod = type_value in ("data", "data_mod", "hybrid")
         if is_data_mod:
             type_label = "Hybrid BepInEx + data mod" if type_value == "hybrid" else "Ostranauts data mod"
+            data_folder = self.record_data_folder(record) if isinstance(record, dict) else str(mod.get("data_mod_folder", "") or "")
             row = self.add_detail_row(row, "Type", type_label)
-            row = self.add_detail_row(row, "Data Folder", (record or {}).get("data_mod_folder") if isinstance(record, dict) else mod.get("data_mod_folder", ""))
+            row = self.add_detail_row(row, "Data Folder", data_folder)
+            game_dir = self.current_game_dir_path()
+            if game_dir:
+                row = self.add_detail_row(row, "Load Order", bmm.display_game_path(game_dir, bmm.loading_order_path(game_dir)))
+            if isinstance(record, dict):
+                load_active = self.record_data_load_active(record)
+                if load_active is not None:
+                    row = self.add_detail_row(row, "Load Active", load_active)
+                    if record.get("enabled", True) and not load_active:
+                        row = self.add_detail_text(
+                            row,
+                            "BMM state says this data mod is enabled, but the game load order does not include its folder.",
+                        )
         plugin_guid = str(plugin.get("guid", "")).strip()
         plugin_dll = str(plugin.get("dll", "")).strip()
         if plugin_guid and plugin_guid != mod_id:
@@ -1524,6 +1889,124 @@ class BmmGui:
             self.log(f"GitHub repo already tracked: {repo}")
         self.github_repo_var.set("")
         self.update_github_repos([repo])
+
+    def load_order_edit_blocked(self) -> bool:
+        if self.search_var.get().strip():
+            messagebox.showinfo(APP_TITLE, "Clear the search box before editing load order so hidden rows are not skipped.")
+            return True
+        game_dir = self.current_game_dir_path()
+        if not game_dir or not game_dir.exists():
+            messagebox.showinfo(APP_TITLE, "Select the Ostranauts game folder before editing data load order.")
+            return True
+        return False
+
+    def selected_data_row_for_edit(self) -> str | None:
+        if self.active_tree is not self.data_tree:
+            messagebox.showinfo(APP_TITLE, "Select a data mod row in the Data Mods / Load Order table.")
+            return None
+        selection = self.data_tree.selection()
+        if not selection:
+            messagebox.showinfo(APP_TITLE, "Select a data mod row first.")
+            return None
+        iid = str(selection[0])
+        folder = self.row_data_folders.get(iid)
+        if not folder:
+            messagebox.showinfo(APP_TITLE, "Select a load-order row first.")
+            return None
+        if folder == "core":
+            messagebox.showinfo(APP_TITLE, "Core is locked at the top of the data load order.")
+            return None
+        if not str(self.data_tree.set(iid, "load")).strip():
+            messagebox.showinfo(APP_TITLE, "This data mod is not in the active load order. Install or enable it before moving it.")
+            return None
+        return iid
+
+    def ordered_data_load_iids(self) -> list[str]:
+        result = []
+        for iid in self.data_tree.get_children():
+            folder = self.row_data_folders.get(str(iid))
+            if not folder or folder == "core":
+                continue
+            if str(self.data_tree.set(iid, "load")).strip():
+                result.append(str(iid))
+        return result
+
+    def renumber_data_load_rows(self) -> None:
+        number = 1
+        for iid in self.data_tree.get_children():
+            folder = self.row_data_folders.get(str(iid))
+            if folder == "core":
+                self.data_tree.set(iid, "load", "locked")
+                continue
+            if not folder:
+                continue
+            if str(self.data_tree.set(iid, "load")).strip():
+                self.data_tree.set(iid, "load", str(number))
+                number += 1
+
+    def move_data_load_order(self, delta: int) -> None:
+        if self.load_order_edit_blocked():
+            return
+        iid = self.selected_data_row_for_edit()
+        if not iid:
+            return
+        movable = self.ordered_data_load_iids()
+        try:
+            index = movable.index(iid)
+        except ValueError:
+            return
+        next_index = index + delta
+        if next_index < 0 or next_index >= len(movable):
+            return
+        target = movable[next_index]
+        target_tree_index = self.data_tree.index(target)
+        if delta < 0:
+            self.data_tree.move(iid, "", target_tree_index)
+        else:
+            self.data_tree.move(iid, "", target_tree_index + 1)
+        self.data_tree.selection_set(iid)
+        self.data_tree.see(iid)
+        self.renumber_data_load_rows()
+        self.data_load_order_dirty = True
+        self.status_var.set("Data load order changed. Use Save Load Order to write loading_order.json.")
+
+    def current_data_tree_load_order(self) -> list[str]:
+        folders = []
+        for iid in self.ordered_data_load_iids():
+            folder = self.row_data_folders.get(iid)
+            if folder and folder != "core":
+                folders.append(folder)
+        return folders
+
+    def save_data_load_order(self) -> None:
+        if self.load_order_edit_blocked():
+            return
+        folders = self.current_data_tree_load_order()
+        game_dir = self.current_game_dir_path()
+        if not game_dir:
+            return
+        load_order_path = bmm.loading_order_path(game_dir)
+        preview = "\n".join(f"{idx}. {folder}" for idx, folder in enumerate(folders, start=1))
+        if not preview:
+            preview = "No data mods after core."
+        message = (
+            "Save this data mod load order to the game?\n\n"
+            f"{preview}\n\n"
+            f"File: {load_order_path}\n\n"
+            "Changing load order can change which data mod wins when two mods edit the same records."
+        )
+        if not messagebox.askyesno(APP_TITLE, message):
+            return
+
+        def task() -> int:
+            path, changed = bmm.save_data_mod_load_order(game_dir, folders)
+            print(f"Data load order {'saved' if changed else 'already current'}: {path}")
+            for idx, folder in enumerate(folders, start=1):
+                print(f"  {idx}. {folder}")
+            return 0
+
+        self.data_load_order_dirty = False
+        self.run_task("Save data load order", task, refresh=True)
 
     def external_action_blocked(self, action: str) -> bool:
         mod_id = self.selected_mod_id()

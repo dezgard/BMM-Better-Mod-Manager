@@ -35,11 +35,26 @@ To add a GitHub mod manually:
 3. Press `Update GitHub`.
 4. Select the mod and use `Install`, `Enable`, `Disable`, `Update`, `Uninstall`, or `Remove`.
 
+The main list is split into two sections:
+
+- `BepInEx / Plugin Mods` shows DLL/plugin mods. These are loaded by BepInEx from `BepInEx\plugins`.
+- `Data Mods / Load Order` shows Ostranauts data mods and their actual load-order position.
+
 To add an Ostranauts data mod ZIP:
 
 1. Select the ZIP in the `Data ZIP` field.
 2. Press `Add Data Mod`.
 3. Install it from the mod list.
+
+Data mods are activated through the game's load-order file at:
+
+```text
+Ostranauts_Data\loading_order.json
+```
+
+BMM uses that file as the source of truth. If an older `Ostranauts_Data\Mods\loading_order.json` exists, BMM warns about it and migrates its entries into the game-facing file the next time a data mod is installed, enabled, or disabled.
+
+Use `Move Up`, `Move Down`, and `Save Load Order` in the data section to change the order written to that JSON file. `core` is the base game data entry and stays locked at the top.
 
 ## Run From Source
 
