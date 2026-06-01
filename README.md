@@ -56,6 +56,16 @@ BMM uses that file as the source of truth. If an older `Ostranauts_Data\Mods\loa
 
 Use `Move Up`, `Move Down`, and `Save Load Order` in the data section to change the order written to that JSON file. `core` is the base game data entry and stays locked at the top.
 
+Ostranauts also stores an in-game Mods folder setting in:
+
+```text
+%USERPROFILE%\AppData\LocalLow\Blue Bottle Games\Ostranauts\settings.json
+```
+
+BMM checks `strPathMods` from that file. If the in-game setting points at a different Mods folder than the selected game folder, BMM shows a warning under the game path because Ostranauts may load data mods from somewhere else.
+
+BMM lists external mods it did not install. It can enable or disable those external entries after a warning, but install, uninstall, update, and remove remain ownership-safe BMM-managed actions.
+
 ## Run From Source
 
 Requirements:

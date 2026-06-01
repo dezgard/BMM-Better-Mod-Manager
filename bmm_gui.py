@@ -553,10 +553,16 @@ class BmmGui:
                 if kind == "log":
                     self.log(str(payload))
                 elif kind == "done":
-                    message, refresh = payload
+                    if len(payload) == 2:
+                        message, refresh = payload
+                        after_refresh = None
+                    else:
+                        message, refresh, after_refresh = payload
                     self.set_busy(False, message)
                     if refresh:
                         self.reload_data(log_errors=False)
+                    if after_refresh:
+                        after_refresh()
                 elif kind == "error":
                     self.set_busy(False, "Error")
                     self.log(str(payload))
@@ -565,7 +571,13 @@ class BmmGui:
             pass
         self.root.after(100, self._process_queue)
 
-    def run_task(self, label: str, func: Callable[[], Any], refresh: bool = True) -> None:
+    def run_task(
+        self,
+        label: str,
+        func: Callable[[], Any],
+        refresh: bool = True,
+        after_refresh: Callable[[], None] | None = None,
+    ) -> None:
         if self.busy:
             return
         self.set_busy(True, label)
@@ -584,9 +596,9 @@ class BmmGui:
                 if error_text:
                     self.queue.put(("log", error_text))
                 if isinstance(result, int) and result != 0:
-                    self.queue.put(("done", (f"Finished with exit code {result}", refresh)))
+                    self.queue.put(("done", (f"Finished with exit code {result}", refresh, after_refresh)))
                 else:
-                    self.queue.put(("done", ("Ready", refresh)))
+                    self.queue.put(("done", ("Ready", refresh, after_refresh)))
             except Exception as exc:  # noqa: BLE001 - GUI boundary should report all failures.
                 details = "".join(traceback.format_exception_only(type(exc), exc)).strip()
                 self.queue.put(("error", details))
@@ -1400,6 +1412,47 @@ class BmmGui:
             return None
         return self.mods_by_id.get(mod_id)
 
+    def select_mod_row(self, mod_id: str) -> bool:
+        targets = [
+            (self.plugin_tree, self.plugin_tree_iid_for_mod(mod_id), "BepInEx / Plugin Mods"),
+            (self.data_tree, self.data_tree_iid_for_mod(mod_id), "Data Mods / Load Order"),
+        ]
+        for tree, iid, section in targets:
+            if not tree.exists(iid):
+                continue
+            other = self.data_tree if tree is self.plugin_tree else self.plugin_tree
+            other.selection_remove(other.selection())
+            tree.selection_set(iid)
+            tree.focus(iid)
+            tree.see(iid)
+            self.active_tree = tree
+            self.show_selected_details()
+            mod = self.mods_by_id.get(mod_id, {})
+            self.status_var.set(f"Showing {mod.get('name') or mod_id} in {section}")
+            return True
+        return False
+
+    def reveal_updated_github_mods(self, mod_ids: list[str]) -> None:
+        clean_ids = []
+        for mod_id in mod_ids:
+            value = str(mod_id or "").strip()
+            if value and value not in clean_ids:
+                clean_ids.append(value)
+        if not clean_ids:
+            return
+        for mod_id in clean_ids:
+            if self.select_mod_row(mod_id):
+                return
+        if self.search_var.get().strip():
+            self.search_var.set("")
+            self.populate_mod_table()
+            self.log("Cleared search filter to show the updated GitHub mod.")
+            for mod_id in clean_ids:
+                if self.select_mod_row(mod_id):
+                    return
+        names = ", ".join(clean_ids)
+        self.status_var.set(f"GitHub update completed, but updated mod row is not visible: {names}")
+
     def repo_for_mod(self, mod_id: str, mod: dict[str, Any] | None = None, state: dict[str, Any] | None = None) -> str | None:
         if isinstance(mod, dict):
             release = mod.get("release")
@@ -1888,7 +1941,7 @@ class BmmGui:
         else:
             self.log(f"GitHub repo already tracked: {repo}")
         self.github_repo_var.set("")
-        self.update_github_repos([repo])
+        self.update_github_repos([repo], focus=True)
 
     def load_order_edit_blocked(self) -> bool:
         if self.search_var.get().strip():
@@ -2019,6 +2072,95 @@ class BmmGui:
         )
         return True
 
+    def confirm_external_toggle(self, mod: dict[str, Any], enable: bool) -> bool:
+        external = mod.get("external") if isinstance(mod.get("external"), dict) else {}
+        name = str(mod.get("name") or mod.get("id") or "external mod")
+        action = "Enable" if enable else "Disable"
+        kind = str(external.get("kind") or "bepinex")
+        if kind == "data":
+            target = f"data load-order folder: {external.get('path', '')}"
+        else:
+            target = f"BepInEx plugin file: {external.get('path', '')}"
+        return messagebox.askyesno(
+            APP_TITLE,
+            f"{action} external mod {name}?\n\n"
+            "This mod was not installed by BMM, so BMM does not own its files and cannot update or remove it safely.\n\n"
+            f"BMM will only change the enabled state for:\n{target}",
+        )
+
+    def external_plugin_toggle_plan(self, game_dir: Path, external: dict[str, Any], enable: bool) -> tuple[Path, Path, str]:
+        rel = str(external.get("path") or "").replace("\\", "/").strip("/")
+        if not rel:
+            raise bmm.BmmError("External plugin path is missing.")
+        root_name = str(external.get("root") or "bepinex_plugins")
+        root = bmm.install_root_path(game_dir, root_name)
+        current = bmm.safe_target(root, rel, root_name)
+
+        if enable:
+            base_rel = self.external_base_path(rel)
+            target = bmm.safe_target(root, base_rel, root_name)
+            if target.exists():
+                return current, target, base_rel
+            if not current.exists():
+                disabled = bmm.safe_target(root, base_rel + ".disabled", root_name)
+                if disabled.exists():
+                    return disabled, target, base_rel
+            if not str(current).lower().endswith(".dll.disabled"):
+                raise bmm.BmmError(f"External plugin is not disabled: {current}")
+            return current, target, base_rel
+
+        base_rel = self.external_base_path(rel)
+        source = bmm.safe_target(root, base_rel, root_name)
+        if not source.exists():
+            source = current
+        if not source.exists():
+            raise bmm.BmmError(f"External plugin file not found: {source}")
+        disabled_rel = base_rel + ".disabled"
+        target = bmm.safe_target(root, disabled_rel, root_name)
+        if target.exists():
+            target = bmm.safe_target(root, disabled_rel + "-" + bmm.stamp(), root_name)
+            disabled_rel = str(target.relative_to(root)).replace("\\", "/")
+        return source, target, disabled_rel
+
+    def toggle_external_selected(self, enable: bool) -> bool:
+        mod = self.selected_mod()
+        if not self.is_external_mod(mod):
+            return False
+        if not self.confirm_external_toggle(mod, enable):
+            return True
+
+        external = mod.get("external") if isinstance(mod.get("external"), dict) else {}
+        kind = str(external.get("kind") or "bepinex")
+        name = str(mod.get("name") or mod.get("id") or "external mod")
+        game_dir = self.current_game_dir_path()
+        if not game_dir or not game_dir.exists():
+            messagebox.showerror(APP_TITLE, "Select the Ostranauts game folder first.")
+            return True
+
+        def task() -> int:
+            if kind == "data":
+                folder = str(external.get("path") or "").strip()
+                if not folder:
+                    raise bmm.BmmError("External data mod folder is missing.")
+                path, changed = bmm.set_data_mod_load_order(game_dir, folder, enable)
+                print(f"{'Enabled' if enable else 'Disabled'} external data mod {name}")
+                print(f"  folder: {folder}")
+                print(f"  load order: {path} ({'changed' if changed else 'already current'})")
+                return 0
+
+            source, target, stored_rel = self.external_plugin_toggle_plan(game_dir, external, enable)
+            if source.resolve() != target.resolve():
+                if enable and target.exists():
+                    raise bmm.BmmError(f"Cannot enable because target already exists: {target}")
+                source.rename(target)
+            print(f"{'Enabled' if enable else 'Disabled'} external BepInEx plugin {name}")
+            print(f"  {source} -> {target}")
+            print(f"  path: {stored_rel}")
+            return 0
+
+        self.run_task(f"{'Enable' if enable else 'Disable'} external {name}", task, refresh=True)
+        return True
+
     def connect_repo_selected(self) -> None:
         mod_id = self.require_selected_mod_id()
         if not mod_id:
@@ -2093,7 +2235,7 @@ class BmmGui:
         if repos:
             self.update_github_repos(list(repos), startup=True)
 
-    def update_github_repos(self, repos: list[str] | None = None, startup: bool = False) -> None:
+    def update_github_repos(self, repos: list[str] | None = None, startup: bool = False, focus: bool = False) -> None:
         self.config = bmm.load_config(self.rt)
         self.ensure_mod_index_file()
         tracked = self.load_tracked_repos()
@@ -2104,6 +2246,8 @@ class BmmGui:
             self.save_runtime_index()
             self.reload_data(log_errors=False)
             return
+
+        updated_mod_ids: list[str] = []
 
         def task() -> int:
             state = bmm.load_state(self.rt)
@@ -2129,6 +2273,9 @@ class BmmGui:
                     )
                     for entry in entries:
                         print(f"    {entry.get('id')}: {entry.get('name')}")
+                        entry_id = str(entry.get("id") or "").strip()
+                        if entry_id and entry_id not in updated_mod_ids:
+                            updated_mod_ids.append(entry_id)
                 except bmm.BmmError as exc:
                     had_error = True
                     statuses[str(repo)] = {
@@ -2150,7 +2297,8 @@ class BmmGui:
             return 1 if had_error else 0
 
         label = "Update GitHub repos on startup" if startup else "Update GitHub repos"
-        self.run_task(label, task, refresh=True)
+        after_refresh = (lambda: self.reveal_updated_github_mods(updated_mod_ids)) if focus else None
+        self.run_task(label, task, refresh=True, after_refresh=after_refresh)
 
     def validate_index(self) -> None:
         def task() -> int:
@@ -2192,7 +2340,7 @@ class BmmGui:
             return
         repo = self.repo_for_mod(str(mod.get("id", "")), mod) if mod else None
         if isinstance(repo, str) and repo:
-            self.update_github_repos([repo])
+            self.update_github_repos([repo], focus=True)
         else:
             self.update_github_repos()
 
@@ -2372,7 +2520,7 @@ class BmmGui:
         mod_id = self.require_selected_mod_id()
         if not mod_id:
             return
-        if self.external_action_blocked("Enable"):
+        if self.toggle_external_selected(True):
             return
 
         def task() -> int:
@@ -2384,7 +2532,7 @@ class BmmGui:
         mod_id = self.require_selected_mod_id()
         if not mod_id:
             return
-        if self.external_action_blocked("Disable"):
+        if self.toggle_external_selected(False):
             return
 
         def task() -> int:

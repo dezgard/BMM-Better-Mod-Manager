@@ -67,6 +67,7 @@ INSTALL_ROOT_ALIASES = {
 RELATIONSHIP_KEYS = ("depends", "recommends", "suggests", "conflicts", "provides")
 DATA_MOD_ROOT = "data_mods"
 LOADING_ORDER_FILE_NAME = "loading_order.json"
+OSTRANAUTS_SETTINGS_PATH = Path(os.environ.get("LOCALAPPDATA", "")) / ".." / "LocalLow" / "Blue Bottle Games" / "Ostranauts" / "settings.json"
 
 
 class BmmError(RuntimeError):
@@ -966,6 +967,40 @@ def data_mods_dir(game_dir: Path) -> Path:
     return install_root_path(game_dir, DATA_MOD_ROOT)
 
 
+def ostranauts_settings_path() -> Path:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data).parent / "LocalLow" / "Blue Bottle Games" / "Ostranauts" / "settings.json"
+    return OSTRANAUTS_SETTINGS_PATH
+
+
+def normalize_user_path(value: str) -> Path:
+    return Path(value.replace("/", os.sep)).expanduser()
+
+
+def configured_mods_path() -> Path | None:
+    settings_path = ostranauts_settings_path()
+    raw = read_json(settings_path, default=None)
+    if not isinstance(raw, dict):
+        return None
+    value = str(raw.get("strPathMods") or "").strip()
+    if not value:
+        return None
+    path = normalize_user_path(value)
+    if path.name.lower() == LOADING_ORDER_FILE_NAME:
+        return path.parent
+    return path
+
+
+def configured_loading_order_path() -> Path | None:
+    mods_path = configured_mods_path()
+    if not mods_path:
+        return None
+    if mods_path.name.lower() == LOADING_ORDER_FILE_NAME:
+        return mods_path
+    return mods_path / LOADING_ORDER_FILE_NAME
+
+
 def loading_order_paths(game_dir: Path) -> tuple[Path, Path]:
     data_path = game_dir / "Ostranauts_Data" / LOADING_ORDER_FILE_NAME
     mods_path = data_mods_dir(game_dir) / LOADING_ORDER_FILE_NAME
@@ -973,6 +1008,11 @@ def loading_order_paths(game_dir: Path) -> tuple[Path, Path]:
 
 
 def loading_order_path(game_dir: Path) -> Path:
+    configured = configured_loading_order_path()
+    if configured:
+        expected_mods = data_mods_dir(game_dir).resolve()
+        if configured.parent.resolve() == expected_mods:
+            return configured
     data_path, _mods_path = loading_order_paths(game_dir)
     return data_path
 
@@ -991,13 +1031,29 @@ def display_game_path(game_dir: Path, path: Path) -> str:
 
 def loading_order_warnings(game_dir: Path) -> list[str]:
     data_path, mods_path = loading_order_paths(game_dir)
+    configured = configured_loading_order_path()
+    expected_mods = data_mods_dir(game_dir).resolve()
+    warnings = []
+    if configured:
+        configured_mods = configured.parent.resolve()
+        configured_label = str(configured)
+        expected_label = str(expected_mods)
+        if configured_mods != expected_mods:
+            warnings.append(f"In-game mod folder differs from selected game folder. Ostranauts setting uses {configured_label}; selected game folder expects {expected_label}.")
+        elif configured.resolve() != data_path.resolve():
+            warnings.append(f"Ostranauts setting uses {display_game_path(game_dir, configured)}. BMM will use that configured load-order file.")
     if not mods_path.exists():
-        return []
+        return warnings
     data_label = display_game_path(game_dir, data_path)
     mods_label = display_game_path(game_dir, mods_path)
     if data_path.exists():
-        return [f"Duplicate data load order found. BMM uses {data_label}; {mods_label} is ignored."]
-    return [f"Legacy data load order found at {mods_label}. BMM will migrate entries to {data_label} on the next data-mod change."]
+        active = loading_order_path(game_dir).resolve()
+        ignored = data_label if active == mods_path.resolve() else mods_label
+        warnings.append(f"Duplicate data load order found. BMM uses {display_game_path(game_dir, loading_order_path(game_dir))}; {ignored} is ignored.")
+        return warnings
+    if not configured:
+        warnings.append(f"Legacy data load order found at {mods_label}. BMM will migrate entries to {data_label} on the next data-mod change.")
+    return warnings
 
 
 def default_loading_order() -> list[dict[str, Any]]:
@@ -1471,8 +1527,12 @@ def command_doctor(args: argparse.Namespace) -> int:
     print(f"Game dir: {game_dir} {'OK' if game_dir.exists() else 'missing'}")
     bepinex = game_dir / "BepInEx"
     print(f"BepInEx: {bepinex} {'OK' if bepinex.exists() else 'missing'}")
-    load_order, legacy_load_order = loading_order_paths(game_dir)
-    print(f"Data mod load order: {load_order} {'OK' if load_order.exists() else 'missing'}")
+    default_load_order, legacy_load_order = loading_order_paths(game_dir)
+    active_load_order = loading_order_path(game_dir)
+    configured = configured_loading_order_path()
+    print(f"In-game mod setting: {configured or 'not found'}")
+    print(f"BMM data load order: {active_load_order} {'OK' if active_load_order.exists() else 'missing'}")
+    print(f"Default data load order: {default_load_order} {'OK' if default_load_order.exists() else 'missing'}")
     print(f"Legacy data load order: {legacy_load_order} {'present' if legacy_load_order.exists() else 'missing'}")
     for warning in loading_order_warnings(game_dir):
         print(f"Warning: {warning}")
