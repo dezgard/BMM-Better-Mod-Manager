@@ -49,10 +49,10 @@ To add an Ostranauts data mod ZIP:
 Data mods are activated through the game's load-order file at:
 
 ```text
-Ostranauts_Data\loading_order.json
+Ostranauts_Data\Mods\loading_order.json
 ```
 
-BMM uses that file as the source of truth. If an older `Ostranauts_Data\Mods\loading_order.json` exists, BMM warns about it and migrates its entries into the game-facing file the next time a data mod is installed, enabled, or disabled.
+BMM uses only the Mods-folder load-order file. If `Ostranauts_Data\loading_order.json` exists one level above `Mods`, BMM warns that it is inactive and continues to use `Ostranauts_Data\Mods\loading_order.json`.
 
 Use `Move Up`, `Move Down`, and `Save Load Order` in the data section to change the order written to that JSON file. `core` is the base game data entry and stays locked at the top.
 
@@ -62,7 +62,7 @@ Ostranauts also stores an in-game Mods folder setting in:
 %USERPROFILE%\AppData\LocalLow\Blue Bottle Games\Ostranauts\settings.json
 ```
 
-BMM checks `strPathMods` from that file. If the in-game setting points at a different Mods folder than the selected game folder, BMM shows a warning under the game path because Ostranauts may load data mods from somewhere else.
+BMM checks `strPathMods` from that file. If the in-game setting points at a different Mods folder than the selected game folder, or if the Mods-folder `loading_order.json` is missing, BMM shows a warning under the game path.
 
 BMM lists external mods it did not install. It can enable or disable those external entries after a warning, but install, uninstall, update, and remove remain ownership-safe BMM-managed actions.
 

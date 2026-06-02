@@ -1217,8 +1217,8 @@ class BmmGui:
             return ["core"]
         try:
             path, order = bmm.load_loading_order(game_dir)
-            if not path.exists() and bmm.legacy_loading_order_path(game_dir).exists():
-                bmm.merge_legacy_loading_order(game_dir, order)
+            if not path.exists() and bmm.inactive_data_loading_order_path(game_dir).exists():
+                bmm.merge_inactive_data_loading_order(game_dir, order)
         except bmm.BmmError:
             return ["core"]
         values = bmm.loading_order_values(order, "aLoadOrder")

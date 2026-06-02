@@ -1008,18 +1008,13 @@ def loading_order_paths(game_dir: Path) -> tuple[Path, Path]:
 
 
 def loading_order_path(game_dir: Path) -> Path:
-    configured = configured_loading_order_path()
-    if configured:
-        expected_mods = data_mods_dir(game_dir).resolve()
-        if configured.parent.resolve() == expected_mods:
-            return configured
-    data_path, _mods_path = loading_order_paths(game_dir)
-    return data_path
-
-
-def legacy_loading_order_path(game_dir: Path) -> Path:
     _data_path, mods_path = loading_order_paths(game_dir)
     return mods_path
+
+
+def inactive_data_loading_order_path(game_dir: Path) -> Path:
+    data_path, _mods_path = loading_order_paths(game_dir)
+    return data_path
 
 
 def display_game_path(game_dir: Path, path: Path) -> str:
@@ -1040,19 +1035,14 @@ def loading_order_warnings(game_dir: Path) -> list[str]:
         expected_label = str(expected_mods)
         if configured_mods != expected_mods:
             warnings.append(f"In-game mod folder differs from selected game folder. Ostranauts setting uses {configured_label}; selected game folder expects {expected_label}.")
-        elif configured.resolve() != data_path.resolve():
-            warnings.append(f"Ostranauts setting uses {display_game_path(game_dir, configured)}. BMM will use that configured load-order file.")
+        elif configured.resolve() != mods_path.resolve():
+            warnings.append(f"Ostranauts setting uses {display_game_path(game_dir, configured)}. BMM expects {display_game_path(game_dir, mods_path)}.")
     if not mods_path.exists():
-        return warnings
+        warnings.append(f"Mods folder load order is missing: {display_game_path(game_dir, mods_path)}")
     data_label = display_game_path(game_dir, data_path)
     mods_label = display_game_path(game_dir, mods_path)
     if data_path.exists():
-        active = loading_order_path(game_dir).resolve()
-        ignored = data_label if active == mods_path.resolve() else mods_label
-        warnings.append(f"Duplicate data load order found. BMM uses {display_game_path(game_dir, loading_order_path(game_dir))}; {ignored} is ignored.")
-        return warnings
-    if not configured:
-        warnings.append(f"Legacy data load order found at {mods_label}. BMM will migrate entries to {data_label} on the next data-mod change.")
+        warnings.append(f"Inactive data-folder load order found at {data_label}. BMM uses {mods_label}.")
     return warnings
 
 
@@ -1086,8 +1076,8 @@ def load_loading_order(game_dir: Path) -> tuple[Path, list[dict[str, Any]]]:
     return path, normalize_loading_order(raw, path)
 
 
-def load_legacy_loading_order(game_dir: Path) -> tuple[Path, list[dict[str, Any]]] | None:
-    path = legacy_loading_order_path(game_dir)
+def load_inactive_data_loading_order(game_dir: Path) -> tuple[Path, list[dict[str, Any]]] | None:
+    path = inactive_data_loading_order_path(game_dir)
     if not path.exists():
         return None
     raw = read_json(path, default=None)
@@ -1107,16 +1097,16 @@ def loading_order_values(order: list[dict[str, Any]], key: str) -> list[str]:
     return clean
 
 
-def merge_legacy_loading_order(game_dir: Path, order: list[dict[str, Any]]) -> bool:
-    legacy = load_legacy_loading_order(game_dir)
-    if not legacy:
+def merge_inactive_data_loading_order(game_dir: Path, order: list[dict[str, Any]]) -> bool:
+    inactive = load_inactive_data_loading_order(game_dir)
+    if not inactive:
         return False
-    _legacy_path, legacy_order = legacy
+    _inactive_path, inactive_order = inactive
     item = order[0]
     changed = False
 
     current = loading_order_values(order, "aLoadOrder")
-    for value in loading_order_values(legacy_order, "aLoadOrder"):
+    for value in loading_order_values(inactive_order, "aLoadOrder"):
         if value not in current:
             current.append(value)
             changed = True
@@ -1130,7 +1120,7 @@ def merge_legacy_loading_order(game_dir: Path, order: list[dict[str, Any]]) -> b
         item["aLoadOrder"] = current
 
     ignore = loading_order_values(order, "aIgnorePatterns")
-    for value in loading_order_values(legacy_order, "aIgnorePatterns"):
+    for value in loading_order_values(inactive_order, "aIgnorePatterns"):
         if value not in ignore:
             ignore.append(value)
             changed = True
@@ -1149,7 +1139,7 @@ def set_data_mod_load_order(game_dir: Path, folder: str, enable: bool) -> tuple[
     path, order = load_loading_order(game_dir)
     item = order[0]
     original = loading_order_values(order, "aLoadOrder")
-    merge_legacy_loading_order(game_dir, order)
+    merge_inactive_data_loading_order(game_dir, order)
     current = loading_order_values(order, "aLoadOrder")
     next_order = []
     if "core" not in current:
@@ -1186,7 +1176,7 @@ def save_data_mod_load_order(game_dir: Path, folders: list[str]) -> tuple[Path, 
     path, order = load_loading_order(game_dir)
     item = order[0]
     original = loading_order_values(order, "aLoadOrder")
-    merge_legacy_loading_order(game_dir, order)
+    merge_inactive_data_loading_order(game_dir, order)
 
     clean = []
     for folder in folders:
@@ -1527,13 +1517,13 @@ def command_doctor(args: argparse.Namespace) -> int:
     print(f"Game dir: {game_dir} {'OK' if game_dir.exists() else 'missing'}")
     bepinex = game_dir / "BepInEx"
     print(f"BepInEx: {bepinex} {'OK' if bepinex.exists() else 'missing'}")
-    default_load_order, legacy_load_order = loading_order_paths(game_dir)
+    inactive_load_order, mods_load_order = loading_order_paths(game_dir)
     active_load_order = loading_order_path(game_dir)
     configured = configured_loading_order_path()
     print(f"In-game mod setting: {configured or 'not found'}")
     print(f"BMM data load order: {active_load_order} {'OK' if active_load_order.exists() else 'missing'}")
-    print(f"Default data load order: {default_load_order} {'OK' if default_load_order.exists() else 'missing'}")
-    print(f"Legacy data load order: {legacy_load_order} {'present' if legacy_load_order.exists() else 'missing'}")
+    print(f"Mods folder data load order: {mods_load_order} {'OK' if mods_load_order.exists() else 'missing'}")
+    print(f"Inactive data-folder load order: {inactive_load_order} {'present' if inactive_load_order.exists() else 'missing'}")
     for warning in loading_order_warnings(game_dir):
         print(f"Warning: {warning}")
     ok = bepinex.exists()
